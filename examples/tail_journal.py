@@ -9,7 +9,7 @@ log plus a JSON heartbeat. Anything that can read a file can be a consumer.
 This is a READER. It deliberately does not touch the read cursor, because
 reading is not consuming — only `convo wait` advances delivery position.
 """
-import json, os, sys, time
+import calendar, json, os, sys, time
 
 tag = sys.argv[1] if len(sys.argv) > 1 else os.environ.get("CONVO_TAG", "default")
 home = os.environ.get("AGENT_CONVERSATIONS_HOME",
@@ -26,7 +26,9 @@ with open(journal, "r", encoding="utf-8") as f:
             # not quiet. Never wait forever on a corpse.
             try:
                 hb = json.load(open(beat, encoding="utf-8"))
-                age = time.time() - time.mktime(time.strptime(hb["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
+                # timegm, NOT mktime: "ts" is UTC, and reading it as local time
+                # makes a healthy daemon look hours stale (or hours in the future).
+                age = time.time() - calendar.timegm(time.strptime(hb["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
                 if age > max(5, (hb.get("intervalMs", 0) / 1000) * 3):
                     sys.exit("listener is stale — the daemon is not delivering")
             except FileNotFoundError:

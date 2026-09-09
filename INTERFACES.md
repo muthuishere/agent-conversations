@@ -430,7 +430,7 @@ Node, no HTTP.
 ### Python — tail the journal, refuse to trust silence
 
 ```python
-import json, os, time
+import calendar, json, os, time
 home = os.environ.get("AGENT_CONVERSATIONS_HOME", os.path.expanduser("~/.config/agent-conversations"))
 tag  = os.environ.get("CONVO_TAG", "default")
 beat = os.path.join(home, f"heartbeat.{tag}.json")
@@ -441,7 +441,10 @@ with open(os.path.join(home, "journal", f"{tag}.ndjson")) as f:
         line = f.readline()
         if not line.endswith("\n"):                         # partial or nothing yet
             hb = json.load(open(beat))                      # liveness BEFORE waiting
-            if time.time() - time.mktime(time.strptime(hb["ts"][:19], "%Y-%m-%dT%H:%M:%S")) > 3 * hb["intervalMs"] / 1000:
+            # timegm, not mktime: "ts" is UTC. Reading it as local time makes a
+            # healthy daemon look hours stale — a false alarm that is worse than none.
+            age = time.time() - calendar.timegm(time.strptime(hb["ts"][:19], "%Y-%m-%dT%H:%M:%S"))
+            if age > max(5, 3 * hb["intervalMs"] / 1000):
                 raise SystemExit("listener is stale — silence here is deafness, not quiet")
             time.sleep(0.25)
             continue
