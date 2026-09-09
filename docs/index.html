@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Wake Boundary</title>
+<meta name="description" content="A reference architecture for agents that hold conversations on a messaging channel — without a polling loop, without losing messages, and without paying while idle.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Public+Sans:ital,wght@0,400;0,500;0,600;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme: light;
+  --serif: "Newsreader", "Iowan Old Style", Georgia, "Times New Roman", serif;
+  --sans: "Public Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --bg:            #f7f8fa;
+  --bg-plate:     #ffffff;
+  --bg-sunken:    #eef1f5;
+  --bg-daemon:    #eef3f9;
+  --bg-agent:     #f4f2ee;
+  --ink:          #16202b;
+  --ink-strong:   #0a1219;
+  --ink-muted:    #5a6773;
+  --ink-faint:    #7d8894;
+  --rule:         #d9dfe6;
+  --rule-strong:  #b6c0cb;
+  --accent:       #1b6fc4;
+  --accent-deep:  #14548f;
+  --accent-wash:  #e6eff9;
+  --danger:       #b1283a;
+  --danger-wash:  #fbeef0;
+  --danger-rule:  #e6c3c8;
+  --yes:          #1b6fc4;
+  --no:           #a8b2bd;
+
+  --measure: 66ch;
+  --step--1: 0.8125rem;
+  --step-0:  1.0625rem;
+  --step-1:  1.25rem;
+  --step-2:  1.5rem;
+  --step-3:  1.9375rem;
+  --step-4:  2.75rem;
+  --step-5:  3.75rem;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    color-scheme: dark;
+    --bg:           #0e1419;
+    --bg-plate:     #141c23;
+    --bg-sunken:    #101820;
+    --bg-daemon:    #121e2b;
+    --bg-agent:     #1e1d1a;
+    --ink:          #d6dee6;
+    --ink-strong:   #f0f4f8;
+    --ink-muted:    #93a0ad;
+    --ink-faint:    #74818e;
+    --rule:         #26313c;
+    --rule-strong:  #3a4854;
+    --accent:       #6cb0ee;
+    --accent-deep:  #9ccbf6;
+    --accent-wash:  #142534;
+    --danger:       #ef8b98;
+    --danger-wash:  #2a1418;
+    --danger-rule:  #4a252c;
+    --yes:          #6cb0ee;
+    --no:           #4f5c68;
+  }
+}
+:root[data-theme="dark"]{
+  color-scheme: dark;
+  --bg:           #0e1419;
+  --bg-plate:     #141c23;
+  --bg-sunken:    #101820;
+  --bg-daemon:    #121e2b;
+  --bg-agent:     #1e1d1a;
+  --ink:          #d6dee6;
+  --ink-strong:   #f0f4f8;
+  --ink-muted:    #93a0ad;
+  --ink-faint:    #74818e;
+  --rule:         #26313c;
+  --rule-strong:  #3a4854;
+  --accent:       #6cb0ee;
+  --accent-deep:  #9ccbf6;
+  --accent-wash:  #142534;
+  --danger:       #ef8b98;
+  --danger-wash:  #2a1418;
+  --danger-rule:  #4a252c;
+  --yes:          #6cb0ee;
+  --no:           #4f5c68;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  font-size:var(--step-0);
+  line-height:1.62;
+  font-synthesis-weight:none;
+  -webkit-font-smoothing:antialiased;
+}
+img{max-width:100%}
+a{color:var(--accent);text-underline-offset:.18em;text-decoration-thickness:from-font}
+a:hover{color:var(--accent-deep)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:2px}
+
+.wrap{max-width:78rem;margin:0 auto;padding:0 clamp(1.25rem,4vw,3.5rem)}
+.col{max-width:var(--measure)}
+
+/* ── masthead ───────────────────────────── */
+.masthead{border-bottom:1px solid var(--rule-strong);padding:clamp(3rem,7vw,5.5rem) 0 clamp(2rem,4vw,3rem)}
+.eyebrow{
+  font-family:var(--mono);font-size:var(--step--1);letter-spacing:.13em;
+  text-transform:uppercase;color:var(--ink-faint);margin:0 0 1.4rem;
+}
+h1{
+  font-family:var(--serif);font-weight:500;font-size:clamp(2.5rem,6.4vw,var(--step-5));
+  line-height:1.04;letter-spacing:-0.02em;color:var(--ink-strong);margin:0 0 1rem;max-width:16ch;
+}
+.deck{
+  font-family:var(--serif);font-size:clamp(1.125rem,2.3vw,var(--step-2));
+  line-height:1.45;color:var(--ink-muted);max-width:44ch;margin:0 0 2rem;font-weight:400;
+}
+.deck em{color:var(--ink);font-style:italic}
+.masthead-meta{
+  display:flex;flex-wrap:wrap;gap:.6rem 1.6rem;align-items:baseline;
+  font-family:var(--mono);font-size:var(--step--1);color:var(--ink-faint);
+}
+.masthead-meta a{color:var(--ink-muted);text-decoration:none;border-bottom:1px solid var(--rule-strong);padding-bottom:1px}
+.masthead-meta a:hover{color:var(--accent);border-color:var(--accent)}
+
+/* ── sections ───────────────────────────── */
+main{padding-bottom:5rem}
+section{padding:clamp(2.75rem,6vw,4.5rem) 0;border-bottom:1px solid var(--rule)}
+section:last-of-type{border-bottom:0}
+.sec-head{display:flex;gap:1.15rem;align-items:baseline;margin:0 0 1.6rem}
+h2{
+  font-family:var(--serif);font-weight:500;font-size:clamp(1.65rem,3.6vw,var(--step-3));
+  line-height:1.15;letter-spacing:-0.012em;color:var(--ink-strong);margin:0;max-width:22ch;
+}
+h3{
+  font-family:var(--sans);font-weight:600;font-size:var(--step-0);
+  letter-spacing:.005em;color:var(--ink-strong);margin:2.4rem 0 .6rem;
+}
+h4{
+  font-family:var(--mono);font-weight:500;font-size:var(--step--1);letter-spacing:.1em;
+  text-transform:uppercase;color:var(--ink-faint);margin:2rem 0 .55rem;
+}
+p{margin:0 0 1.05em;max-width:var(--measure)}
+ul,ol{max-width:var(--measure);padding-left:1.35em;margin:0 0 1.15em}
+li{margin-bottom:.5em}
+li::marker{color:var(--ink-faint)}
+strong{font-weight:600;color:var(--ink-strong)}
+.lede{font-size:var(--step-1);line-height:1.5;color:var(--ink-muted);max-width:52ch}
+
+code{
+  font-family:var(--mono);font-size:.86em;
+  background:var(--bg-sunken);border:1px solid var(--rule);
+  padding:.08em .34em;border-radius:3px;color:var(--ink-strong);
+  white-space:nowrap;
+}
+
+blockquote{
+  margin:1.8rem 0;padding:0 0 0 1.5rem;border-left:2px solid var(--accent);
+  max-width:56ch;
+}
+blockquote p{
+  font-family:var(--serif);font-size:var(--step-1);line-height:1.48;
+  color:var(--ink-strong);font-style:italic;margin:0;
+}
+blockquote p + p{margin-top:.7em}
+
+/* ── plates & scrollers ─────────────────── */
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:1.6rem 0}
+.plate{
+  background:var(--bg-plate);border:1px solid var(--rule);
+  border-radius:2px;
+}
+pre{
+  margin:0;padding:1.4rem clamp(1rem,2.5vw,1.75rem);
+  font-family:var(--mono);font-size:var(--step--1);line-height:1.6;
+  color:var(--ink);
+}
+pre code{background:none;border:0;padding:0;font-size:inherit;white-space:pre}
+.diagram pre{font-size:clamp(.68rem,1.35vw,.8125rem);line-height:1.42;color:var(--ink-muted)}
+.caption{
+  font-family:var(--mono);font-size:var(--step--1);color:var(--ink-faint);
+  margin:.6rem 0 0;max-width:var(--measure);
+}
+
+/* ── tables ─────────────────────────────── */
+table{border-collapse:collapse;width:100%;min-width:36rem;font-size:.94rem;line-height:1.45}
+.wide table{min-width:52rem}
+caption{
+  text-align:left;font-family:var(--mono);font-size:var(--step--1);
+  letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);
+  padding-bottom:.75rem;
+}
+th,td{padding:.72rem 1rem;text-align:left;vertical-align:top;border-bottom:1px solid var(--rule)}
+thead th{
+  font-family:var(--mono);font-size:var(--step--1);font-weight:500;
+  letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);
+  border-bottom:1px solid var(--rule-strong);white-space:nowrap;
+}
+tbody tr:last-child td{border-bottom:0}
+td.k,th.k{font-weight:600;color:var(--ink-strong);white-space:nowrap}
+.tag{
+  font-family:var(--mono);font-weight:700;font-size:.82rem;letter-spacing:.04em;
+  color:var(--accent);white-space:nowrap;
+}
+.num{font-family:var(--mono);font-size:.86rem;white-space:nowrap}
+.muted{color:var(--ink-muted)}
+
+/* the two-tone split table — the boundary made literal */
+.split{--pad:.7rem}
+.split table{min-width:44rem}
+.split thead th:nth-child(2){background:var(--bg-daemon);color:var(--accent);text-align:center}
+.split thead th:nth-child(3){background:var(--bg-agent);text-align:center;color:var(--ink-strong)}
+.split tbody td:nth-child(2){background:var(--bg-daemon);text-align:center;font-family:var(--mono);font-size:.82rem}
+.split tbody td:nth-child(3){background:var(--bg-agent);text-align:center;font-family:var(--mono);font-size:.82rem}
+.split .on{color:var(--yes);font-weight:700}
+.split .off{color:var(--no)}
+.split .part{color:var(--ink-muted);font-size:.76rem;letter-spacing:.02em}
+.split tbody td:nth-child(2){border-left:1px solid var(--rule-strong)}
+.split tbody td:nth-child(3){border-right:1px solid var(--rule-strong)}
+.split thead th:nth-child(2){border-left:1px solid var(--rule-strong)}
+.split thead th:nth-child(3){border-right:1px solid var(--rule-strong)}
+
+/* failure-modes table — the only place red lives */
+.fail table{min-width:48rem}
+.fail thead th{color:var(--danger);border-bottom-color:var(--danger-rule)}
+.fail td:first-child{color:var(--danger);font-weight:600}
+.fail tbody tr:nth-child(odd){background:var(--danger-wash)}
+.fail td,.fail th{border-bottom-color:var(--danger-rule)}
+
+/* ── wake mechanism prose blocks ────────── */
+.wakes{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);margin:2rem 0;border-radius:2px;overflow:hidden}
+@media (min-width:56rem){.wakes{grid-template-columns:repeat(3,1fr)}}
+.wake{background:var(--bg-plate);padding:1.4rem clamp(1rem,2vw,1.5rem)}
+.wake h3{margin:0 0 .1rem;font-family:var(--mono);font-size:var(--step-1);font-weight:700;color:var(--accent);letter-spacing:.02em}
+.wake .wname{font-family:var(--serif);font-size:var(--step-1);color:var(--ink-strong);line-height:1.25;margin:0 0 .7rem;max-width:none}
+.wake p{font-size:.94rem;line-height:1.55;color:var(--ink-muted);margin:0 0 .8rem;max-width:none}
+.wake p:last-child{margin-bottom:0}
+.wake .verdict{
+  font-family:var(--mono);font-size:var(--step--1);color:var(--ink-strong);
+  border-top:1px solid var(--rule);padding-top:.7rem;margin-top:.9rem;
+}
+
+/* ── callouts ───────────────────────────── */
+.note{
+  border-left:2px solid var(--accent);background:var(--accent-wash);
+  padding:1rem 1.25rem;margin:1.75rem 0;max-width:60ch;border-radius:0 2px 2px 0;
+}
+.note p{margin:0;font-size:.96rem;max-width:none}
+.note p + p{margin-top:.7em}
+.note .label{
+  display:block;font-family:var(--mono);font-size:var(--step--1);letter-spacing:.1em;
+  text-transform:uppercase;color:var(--accent);margin-bottom:.4rem;
+}
+
+/* ── build order ────────────────────────── */
+.steps{list-style:none;padding:0;margin:1.8rem 0;max-width:58ch;counter-reset:step}
+.steps li{
+  counter-increment:step;position:relative;padding:.75rem 0 .75rem 3.25rem;
+  border-bottom:1px solid var(--rule);margin:0;
+}
+.steps li:last-child{border-bottom:0}
+.steps li::before{
+  content:counter(step);position:absolute;left:0;top:.75rem;
+  font-family:var(--mono);font-size:var(--step--1);color:var(--ink-faint);
+  width:2rem;text-align:right;
+}
+.steps li.gate{background:linear-gradient(to right,var(--accent-wash),transparent 70%);padding-left:3.25rem}
+.steps li.gate::before{color:var(--accent)}
+.ship{
+  font-family:var(--serif);font-style:italic;font-size:var(--step-1);
+  color:var(--ink-strong);border-top:1px solid var(--rule-strong);
+  padding-top:1.2rem;margin-top:.5rem;max-width:52ch;
+}
+
+/* ── links / footer ─────────────────────── */
+.linkgrid{display:grid;gap:1px;background:var(--rule);border:1px solid var(--rule);margin:2rem 0;border-radius:2px;overflow:hidden}
+@media (min-width:40rem){.linkgrid{grid-template-columns:1fr 1fr}}
+@media (min-width:64rem){.linkgrid{grid-template-columns:repeat(3,1fr)}}
+.linkgrid a{
+  background:var(--bg-plate);padding:1.1rem 1.35rem;text-decoration:none;display:block;color:inherit;
+}
+.linkgrid a:hover{background:var(--accent-wash)}
+.linkgrid .lt{font-family:var(--mono);font-size:.9rem;color:var(--accent);display:block;margin-bottom:.2rem}
+.linkgrid .ld{font-size:.88rem;color:var(--ink-muted);display:block;line-height:1.4}
+
+footer{
+  border-top:1px solid var(--rule-strong);padding:2.5rem 0 4rem;
+  font-family:var(--mono);font-size:var(--step--1);color:var(--ink-faint);
+}
+footer p{max-width:var(--measure)}
+
+/* ── theme toggle ───────────────────────── */
+.theme-toggle{
+  position:fixed;top:1rem;right:1rem;z-index:10;
+  font-family:var(--mono);font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;
+  background:var(--bg-plate);color:var(--ink-muted);
+  border:1px solid var(--rule-strong);border-radius:2px;
+  padding:.42rem .7rem;cursor:pointer;line-height:1;
+}
+.theme-toggle:hover{color:var(--accent);border-color:var(--accent)}
+
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+}
+</style>
+</head>
+<body>
+
+<button class="theme-toggle" id="tt" type="button" aria-label="Toggle colour theme">Theme</button>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow">Reference architecture &middot; agent-conversations</p>
+    <h1>The Wake Boundary</h1>
+    <p class="deck">How an agent holds a conversation on a messaging channel — without a polling loop, without losing messages, and <em>without paying while nothing happens.</em></p>
+    <div class="masthead-meta">
+      <span>Teams &middot; Slack &middot; WhatsApp &middot; Telegram &middot; email</span>
+      <a href="https://github.com/muthuishere/agent-conversations">github.com/muthuishere/agent-conversations</a>
+      <span>MIT</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ───────────────────────── problem -->
+<section id="problem">
+  <div class="wrap">
+    <div class="sec-head"><h2>An agent cannot be pushed to</h2></div>
+    <div class="col">
+      <p class="lede">An agent session is a request/response process. It cannot hold a socket, and nothing can push into it. To notice an inbound message, <strong>something must invoke the agent again.</strong></p>
+      <p>The naive answer is a loop inside the agent:</p>
+    </div>
+    <div class="scroll plate" style="max-width:var(--measure)">
+      <pre><code>while true: check for messages; sleep 5</code></pre>
+    </div>
+    <div class="col">
+      <p>Three things are wrong with it, and each gets worse with scale.</p>
+      <ol>
+        <li><strong>It costs a turn per tick.</strong> Tokens are spent in proportion to <em>time</em>, not to traffic. An idle channel bills the same as a busy one.</li>
+        <li><strong>It still misses messages.</strong> Anything arriving between ticks waits for the next one, and a reply that lands mid-turn is simply not seen.</li>
+        <li><strong>It cannot survive the session.</strong> Close the terminal and the listener is gone — silently, which is the worst way for a listener to die.</li>
+      </ol>
+      <p>Every real design is about <strong>who does the invoking</strong>, and the answer is never “the agent”.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── principle -->
+<section id="principle">
+  <div class="wrap">
+    <div class="sec-head"><h2>Separate receiving from waking from answering</h2></div>
+    <div class="col">
+      <blockquote>
+        <p>They have different lifetimes, different costs, and different failure modes. Fusing any two of them produces a system that either loses messages or burns money.</p>
+      </blockquote>
+      <p>This is the whole architecture. Everything below is a consequence of holding the three apart — and the boundary that matters most is the one between the daemon, which never thinks, and the agent, which only thinks.</p>
+    </div>
+    <div class="scroll">
+      <table>
+        <caption>The three concerns</caption>
+        <thead><tr><th class="k">Concern</th><th>Owner</th><th>Lifetime</th><th>Cost</th></tr></thead>
+        <tbody>
+          <tr><td class="k">Receiving</td><td>daemon</td><td>forever, outlives every session</td><td class="num">~zero — no model</td></tr>
+          <tr><td class="k">Waking</td><td>tripwire — blocked process, spawn, or injection</td><td>per message</td><td class="num">zero while idle</td></tr>
+          <tr><td class="k">Answering</td><td>agent</td><td>one turn per batch</td><td class="num">the only real cost</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="caption">Receiving gets messages out of the channel durably; waking tells an agent something arrived; answering decides and replies.</p>
+  </div>
+</section>
+
+<!-- ───────────────────────── diagram -->
+<section id="architecture">
+  <div class="wrap">
+    <div class="sec-head"><h2>The shape of it</h2></div>
+    <div class="col">
+      <p>One always-on daemon with no model in it, a journal on disk, and a tripwire that costs nothing until it fires. The agent appears only to answer, and only once per batch.</p>
+    </div>
+    <div class="scroll plate diagram">
+<pre><code>        ┌──────────────────────────────────────────────┐
+        │  CHANNEL   (Teams / Slack / WhatsApp / SMTP) │
+        └───────────────────┬──────────────────────────┘
+                            │  transport adapter (poll or push)
+                            ▼
+   ┌────────────────────────────────────────────────────────┐
+   │ DAEMON — always on, no model, outlives every session    │
+   │  · discovery: which conversations exist                 │
+   │  · fetch: delta/cursor per conversation                 │
+   │  · normalize: channel payload → canonical envelope      │
+   │  · suppress: drop our own messages                      │
+   │  · append: durable journal (append-only)                │
+   │  · heartbeat: prove liveness                            │
+   │  · dispatch: optional handler spawn                     │
+   └───────┬──────────────────────────────┬─────────────────┘
+           │ journal (file/db)            │ spawn per batch
+           ▼                              ▼
+   ┌───────────────┐              ┌──────────────────┐
+   │ WAKE TRIPWIRE │              │ HANDLER (fresh)  │
+   │ blocked proc  │              │ headless agent   │
+   └───────┬───────┘              └──────────────────┘
+           │ exits → runtime re-invokes
+           ▼
+   ┌──────────────────────────────────────┐
+   │ AGENT + SKILL — one turn per batch    │
+   │  filter → decide → reply → re-arm     │
+   └──────────────────────────────────────┘</code></pre>
+    </div>
+    <p class="caption">Below the line: infrastructure, no judgement. Above it: policy, no transport.</p>
+  </div>
+</section>
+
+<!-- ───────────────────────── wake mechanisms -->
+<section id="wake">
+  <div class="wrap">
+    <div class="sec-head"><h2>The three wake mechanisms</h2></div>
+    <div class="col">
+      <p class="lede">There are only three ways to get an agent invoked when a message lands. A mature product implements at least two.</p>
+    </div>
+    <div class="scroll wide">
+      <table>
+        <caption>W1 / W2 / W3 compared</caption>
+        <thead><tr><th>&nbsp;</th><th class="k">Mechanism</th><th>Who invokes</th><th>Idle cost</th><th>Latency</th><th>Survives session death</th><th>Portability</th></tr></thead>
+        <tbody>
+          <tr>
+            <td class="tag">W1</td>
+            <td>Blocked process exits, runtime re-invokes the session</td>
+            <td>the agent runtime</td><td class="num">zero</td><td class="num">instant</td>
+            <td class="num muted">no</td><td>runtime-specific</td>
+          </tr>
+          <tr>
+            <td class="tag">W2</td>
+            <td>Daemon spawns a fresh headless agent per batch</td>
+            <td>the daemon</td><td class="num">zero</td><td class="num">spawn time</td>
+            <td class="num"><strong>yes</strong></td><td><strong>universal</strong></td>
+          </tr>
+          <tr>
+            <td class="tag">W3</td>
+            <td>Keystroke injection into a live interactive session</td>
+            <td>an external driver</td><td class="num">zero</td><td class="num">~1 s</td>
+            <td class="num muted">no</td><td>terminal-specific</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="wakes">
+      <div class="wake">
+        <h3>W1</h3>
+        <p class="wname">Background task exits, runtime re-invokes</p>
+        <p>The agent arms a blocked child process and ends its turn. The process sits on the journal costing nothing; when a message lands it exits, and the runtime — noticing a watched task finished — invokes the session again.</p>
+        <p>Choose it for an <strong>attended session that should react now</strong>. It is the cheapest and the fastest path, and it is the one that dies with the terminal.</p>
+        <p class="verdict">Verify empirically. Runtime documentation on background-task-exit wake contradicts itself; whether your runtime actually re-invokes is a matter of observation, not of reading.</p>
+      </div>
+      <div class="wake">
+        <h3>W2</h3>
+        <p class="wname">Daemon spawns a handler per batch</p>
+        <p>The daemon itself launches a fresh headless agent when a batch is ready, hands it the messages, and lets it exit. No session needs to exist beforehand; nothing needs to survive.</p>
+        <p>Choose it for anything <strong>unattended and always-on</strong>. It depends on no runtime behaviour beyond “can start a process”, so it works everywhere — and a stateless handler with a small toolset is the easiest thing to secure.</p>
+        <p class="verdict">This is the portable floor. Build it first. If W2 does not work, you do not have a product.</p>
+      </div>
+      <div class="wake">
+        <h3>W3</h3>
+        <p class="wname">Keystroke injection into a live session</p>
+        <p>An external driver types into a terminal that already has an idle agent sitting at its prompt. Crude, and entirely dependent on the terminal.</p>
+        <p>Choose it to reach a <strong>human-shaped session that armed nothing</strong> — the case W1 and W2 cannot cover, because there is no tripwire and spawning a second agent would not reach the one you mean.</p>
+        <p class="verdict">A niche bridge, not a foundation. Never the only mechanism.</p>
+      </div>
+    </div>
+
+    <div class="note">
+      <span class="label">The rule</span>
+      <p>W1 and W3 are <strong>optimizations over W2</strong>, not alternatives to it. Ship the universal mechanism, measure whether latency actually hurts, and only then add a runtime-specific one.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── envelope -->
+<section id="envelope">
+  <div class="wrap">
+    <div class="sec-head"><h2>The canonical envelope</h2></div>
+    <div class="col">
+      <p>Every channel is flattened into one shape before anything above the daemon sees it. This normalization is what makes the agent portable: the adapter is the only channel-specific code in the system.</p>
+    </div>
+    <div class="scroll plate">
+<pre><code>{
+  "id": "…",
+  "at": "2026-09-09T10:00:00Z",
+  "from":   { "id": "…", "name": "…" },
+  "text":   "plain text, always present",
+  "html":   "original rich body, or null",
+  "source": { "kind": "chat|channel|email",
+              "conversationId": "…",
+              "name": "#general | dm",
+              "threadId": "…" },
+  "replyToId": null,
+  "mentionsMe": false,
+  "raw": { }
+}</code></pre>
+    </div>
+    <div class="col">
+      <p>Two fields carry disproportionate weight.</p>
+      <p><strong><code>source.kind</code> plus <code>conversationId</code> decide reply routing.</strong> A direct message goes back to that conversation; a channel message goes back as a threaded reply. Get it wrong and the platform returns success while the reply vanishes — the failure is completely silent. The fix is structural: make the reply API take a <em>message id</em> and route itself, and make an unknown id fail loudly.</p>
+      <p><strong><code>raw</code> is never discarded.</strong> You will eventually need a field you did not anticipate, and re-fetching it from the channel is rarely possible.</p>
+    </div>
+    <div class="scroll plate" style="max-width:var(--measure)">
+<pre><code>respond &lt;messageId&gt; "text"    # dm → that conversation
+                              # channel → threaded reply</code></pre>
+    </div>
+    <p class="caption">The agent supplies a message id. The tool decides the target. See <a href="../INTERFACES.md">INTERFACES.md</a> for the full contract.</p>
+  </div>
+</section>
+
+<!-- ───────────────────────── essentials -->
+<section id="essentials">
+  <div class="wrap">
+    <div class="sec-head"><h2>Six things that decide whether it works</h2></div>
+    <div class="col">
+      <p class="lede">The daemon is infrastructure — no model, no judgement, no product policy. Almost all of its difficulty is in six details, and each of them has a specific way of going wrong.</p>
+    </div>
+
+    <h3>Cursor and acknowledgement are not the same thing</h3>
+    <div class="col">
+      <p>This is the single most common bug in this class of system. Conflate them and messages are either redelivered forever or dropped without trace.</p>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>&nbsp;</th><th>Means</th><th>Advanced by</th><th>If you get it wrong</th></tr></thead>
+        <tbody>
+          <tr><td class="k">read cursor</td><td>delivery position</td><td>the daemon, whenever a consumer is <em>handed</em> a message</td><td>never advanced → <strong>infinite redelivery</strong></td></tr>
+          <tr><td class="k">ack</td><td>processed / handled</td><td>the consumer, explicitly</td><td>conflated with the cursor → redelivered forever, or silently dropped</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col">
+      <p>Persist the cursor immediately <em>after</em> a successful hand-off, never before. And reading the journal to look around must not advance anything — <strong>reading is not consuming.</strong></p>
+    </div>
+
+    <h3>The journal is append-only, and written first</h3>
+    <div class="col">
+      <p>One log per listener, one message per line, written <em>before</em> any consumer sees it, never mutated by a read. This is what turns “a message arrived while the agent was thinking” into a non-event, and it is also the audit record of who asked for what. Retention and compaction are a separate concern; the log is the source of truth.</p>
+      <p>Immediately before the journal sits <strong>self-echo suppression</strong>, which is non-negotiable. Without it the agent replies, the daemon sees the reply, the agent is woken, and it replies again — an infinite loop that costs real money and spams a real channel. Suppress by <em>identity</em> (<code>from.id == self.id</code>, or a distinct bot identity for outbound), never by content matching. The subtle trap: a handler configured with a different identity than the daemon replies as someone the suppression does not recognise, and the loop reappears. Pin the handler’s identity to the daemon’s, explicitly.</p>
+    </div>
+
+    <h3>Coalesce — deliver a batch, not a message</h3>
+    <div class="col">
+      <p>After the first message, wait a short window (200–800 ms) and hand over everything that lands. Five people typing at once become <strong>one</strong> agent invocation instead of five. This is the biggest cost lever in the design, and it improves answers too: the agent sees the whole room at once instead of reacting to fragments.</p>
+    </div>
+
+    <h3>Adaptive backoff, with a hard snap back</h3>
+    <div class="col">
+      <p>Fixed-interval polling is either wasteful or slow. Tier it on recent activity instead.</p>
+    </div>
+    <div class="scroll" style="max-width:40rem">
+      <table style="min-width:26rem">
+        <thead><tr><th>State</th><th>Interval</th></tr></thead>
+        <tbody>
+          <tr><td class="k">message on the last poll</td><td class="num">active — 15 s</td></tr>
+          <tr><td class="k">quiet &gt; 2 min</td><td class="num">60 s</td></tr>
+          <tr><td class="k">quiet &gt; 10 min</td><td class="num">idle — 5 min</td></tr>
+          <tr><td class="k">any message arrives</td><td class="num"><strong>snap straight back to active</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <span class="label">Known trade — state it out loud</span>
+      <p>At the idle tier you cannot notice traffic sooner than the idle interval. The first message after a long silence pays full idle latency — precisely the moment a human is starting a conversation. Mitigate by lowering the idle interval while a consumer is attached, or by letting an attended consumer poll on its own.</p>
+    </div>
+
+    <h3>Heartbeat, because the defining failure is silent deafness</h3>
+    <div class="col">
+      <p>The listener dies, the agent believes it is live, and nobody finds out until someone asks why they were ignored. Defend against it directly: the daemon writes <code>{ts, pollCount, lastMessageAt, intervalMs, scope}</code> every cycle, and health fails if that record is older than roughly three intervals.</p>
+      <p><strong>A consumer must refuse to block against a stale heartbeat</strong> — return an error rather than wait forever on a corpse. Silence must never be mistaken for “no messages”, and an agent must never report “listening” from memory. Read the heartbeat.</p>
+    </div>
+
+    <h3>One consumer per listener</h3>
+    <div class="col">
+      <p>Two consumers on one cursor race for messages and tear down each other’s state; one dies and nobody notices. Enforce a single consumer with a pid or lock file, a clear error on conflict, and an explicit takeover flag for the case where you really do mean it.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── split -->
+<section id="split">
+  <div class="wrap">
+    <div class="sec-head"><h2>The boundary, drawn</h2></div>
+    <div class="col">
+      <p>The daemon holds transport, durability and timing. The agent skill holds policy: who to answer, what to say, when to escalate. Nothing crosses.</p>
+    </div>
+    <div class="scroll split">
+      <table>
+        <caption>Responsibility split</caption>
+        <thead><tr><th class="k">Concern</th><th>Daemon</th><th>Agent skill</th></tr></thead>
+        <tbody>
+          <tr><td class="k">Channel API, auth, pagination</td><td class="on">owns</td><td class="off">—</td></tr>
+          <tr><td class="k">Cursors, delta tokens, retries</td><td class="on">owns</td><td class="off">—</td></tr>
+          <tr><td class="k">Normalization to the envelope</td><td class="on">owns</td><td class="off">—</td></tr>
+          <tr><td class="k">Self-echo suppression</td><td class="on">owns</td><td class="off">—</td></tr>
+          <tr><td class="k">Durable journal</td><td class="on">owns</td><td class="off">—</td></tr>
+          <tr><td class="k">Coalescing window</td><td class="on">owns</td><td class="off">—</td></tr>
+          <tr><td class="k">Backoff / rate-limit strategy</td><td class="on">owns</td><td class="off">—</td></tr>
+          <tr><td class="k">Heartbeat and liveness</td><td class="on">owns</td><td class="part">reads it</td></tr>
+          <tr><td class="k">Who to answer (filters)</td><td class="off">—</td><td class="on">owns</td></tr>
+          <tr><td class="k">What to say</td><td class="off">—</td><td class="on">owns</td></tr>
+          <tr><td class="k">Reply routing</td><td class="part">tool routes</td><td class="on">supplies the id</td></tr>
+          <tr><td class="k">Escalation policy</td><td class="off">—</td><td class="on">owns</td></tr>
+          <tr><td class="k">Re-arming the tripwire</td><td class="off">—</td><td class="on">owns</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="note">
+      <span class="label">The test</span>
+      <p>If changing a <em>product</em> rule forces a change in the daemon, the split is wrong. Change who the agent answers by changing a filter — never by re-plumbing the transport.</p>
+    </div>
+    <div class="col">
+      <h4>What the skill actually contains</h4>
+      <p>Operating discipline: never write a polling loop; arm one tripwire and be woken. A timeout is not an error — distinguish “nothing arrived” from “something broke” by exit code. Never claim to be listening without checking state. The tripwire must <em>be</em> the process the runtime watches, not a detached grandchild whose exit notifies nobody. One consumer. Re-arm once per wake, after answering, not on a timer.</p>
+      <p>And policy: the daemon delivers everything, the skill decides what matters — <code>--from</code>, <code>--exclude-from</code>, <code>--match</code>, <code>--in</code>, <code>--mentions-me</code>. Filters apply at delivery, never to the journal, so a filtered-out message is still on disk and still auditable.</p>
+      <h4>Rules first, model second</h4>
+      <p>Most traffic is <code>status</code>, <code>help</code>, <code>ping</code>, acknowledgements. A regex table answers those in milliseconds at zero cost; escalate only what genuinely needs reasoning. That is what makes “many users, fast” affordable — and it degrades gracefully, because a rule table still works when the model is down.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── security -->
+<section id="security">
+  <div class="wrap">
+    <div class="sec-head"><h2>Inbound messages are untrusted input</h2></div>
+    <div class="col">
+      <p class="lede">This architecture actively invites the problem: it takes text written by anyone at all and feeds it to an agent holding real tools.</p>
+      <p>A message saying <em>“summarise the CEO’s inbox”</em> or <em>“run the deploy script”</em> is <strong>data, not an instruction.</strong></p>
+      <ul>
+        <li><strong>A message can request; it can never authorize.</strong></li>
+        <li><strong>Sender identity is not authorization.</strong> Many channels let a display name be spoofed, and even a trustworthy channel only tells you who <em>posted</em> — not what they may command.</li>
+        <li><strong>Give the handler a capability boundary.</strong> A message-driven agent should reach the channel and its own product surface. Not mail, not credentials, not an unrestricted shell.</li>
+        <li><strong>Escalation must be narrow.</strong> Route unmatched questions to a model with a <em>restricted</em> toolset, not to a general-purpose agent with everything mounted.</li>
+        <li><strong>Audit.</strong> The journal is the record of who asked for what. Never let a read destroy it.</li>
+      </ul>
+      <p>The fresh-handler-per-batch design (<span class="tag">W2</span>) helps here as a side effect: a stateless handler with a small toolset is far easier to reason about than a long-lived agent quietly accumulating capability and context.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── failure modes -->
+<section id="failures">
+  <div class="wrap">
+    <div class="sec-head"><h2>Failure modes to design against</h2></div>
+    <div class="col">
+      <p>The recurring theme is a listener that stays <em>visibly healthy</em> while the wake path is severed. Every one of these was observed in practice, not theorized.</p>
+    </div>
+    <div class="scroll fail wide">
+      <table>
+        <thead><tr><th class="k">Failure</th><th>Symptom</th><th>Defence</th></tr></thead>
+        <tbody>
+          <tr><td>Consumer dies early</td><td>silence, indistinguishable from no traffic</td><td>heartbeat; consumer errors on a stale one</td></tr>
+          <tr><td>Two consumers on one cursor</td><td>they race, one dies, nobody notices</td><td>single-consumer lock</td></tr>
+          <tr><td>Tripwire orphaned as a detached child</td><td>runs fine; its exit wakes nobody</td><td>the watched process must <em>be</em> the tripwire</td></tr>
+          <tr><td>Cursor never advances</td><td>the same message redelivered forever</td><td>advance on delivery, not on ack</td></tr>
+          <tr><td>Handler runs as a different identity</td><td>echo suppression misses → infinite self-reply</td><td>pin the handler identity to the daemon’s</td></tr>
+          <tr><td>Reply sent to the wrong target type</td><td>platform returns 200, the message vanishes</td><td>route by <code>source.kind</code>; fail loudly on an unknown id</td></tr>
+          <tr><td>Idle backoff during a new conversation</td><td>the first message waits a full idle period</td><td>lower the idle interval while attended</td></tr>
+          <tr><td>Ad-hoc parsing of tool output</td><td>false bugs; swallowed errors</td><td>give tools a machine-readable <em>and</em> a human-readable mode</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── build order -->
+<section id="build">
+  <div class="wrap">
+    <div class="sec-head"><h2>Build order</h2></div>
+    <div class="col">
+      <p>This one really is a sequence. Each step depends on the one before it, and step four is where you first have something worth calling a product.</p>
+    </div>
+    <ol class="steps">
+      <li>Transport adapter and normalization — poll only.</li>
+      <li>Journal, with cursor and ack kept distinct.</li>
+      <li>Self-echo suppression.</li>
+      <li class="gate"><strong>W2:</strong> the daemon spawns a handler per batch. <em>You now have a working product.</em></li>
+      <li>Heartbeat, single-consumer lock, loud failures.</li>
+      <li>Coalescing and adaptive backoff.</li>
+      <li>Filters, and the rules-first answering layer.</li>
+      <li>W1 and W3 as latency optimizations, if the runtime supports them.</li>
+      <li>A capability boundary on the handler.</li>
+    </ol>
+    <p class="ship">Ship 1–4 before optimizing anything; a correct slow listener beats a fast deaf one.</p>
+  </div>
+</section>
+
+<!-- ───────────────────────── links -->
+<section id="read">
+  <div class="wrap">
+    <div class="sec-head"><h2>Read the rest</h2></div>
+    <div class="linkgrid">
+      <a href="../ARCHITECTURE.md"><span class="lt">ARCHITECTURE.md</span><span class="ld">The full reference architecture, including scaling and porting to another channel.</span></a>
+      <a href="../INTERFACES.md"><span class="lt">INTERFACES.md</span><span class="ld">The contracts: adapter interface, envelope schema, daemon/consumer protocol.</span></a>
+      <a href="../reference/daemon/"><span class="lt">reference/daemon/</span><span class="ld">Journal, cursor semantics, coalescing, backoff, heartbeat, locking.</span></a>
+      <a href="../reference/adapters/"><span class="lt">reference/adapters/</span><span class="ld">Per-channel notes — Teams, Slack, Telegram, WhatsApp, IMAP.</span></a>
+      <a href="../reference/skill/"><span class="lt">reference/skill/</span><span class="ld">The agent side: discipline, filters, reply routing, re-arming.</span></a>
+      <a href="../examples/"><span class="lt">examples/</span><span class="ld">Run <code>node examples/demo.js</code> — the whole loop offline, no install.</span></a>
+    </div>
+    <p><a href="https://github.com/muthuishere/agent-conversations">github.com/muthuishere/agent-conversations</a></p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>agent-conversations — a reference architecture, not a framework. MIT licensed, 2026.</p>
+    <p>If the envelope and the daemon contract hold, porting to a new channel changes the adapter and nothing else. That is the test of whether it was implemented correctly.</p>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var root=document.documentElement, btn=document.getElementById('tt');
+  var saved=null; try{saved=localStorage.getItem('ac-theme');}catch(e){}
+  if(saved==='dark'||saved==='light'){root.setAttribute('data-theme',saved);}
+  btn.addEventListener('click',function(){
+    var dark=getComputedStyle(root).colorScheme.indexOf('dark')>-1;
+    var next=dark?'light':'dark';
+    root.setAttribute('data-theme',next);
+    try{localStorage.setItem('ac-theme',next);}catch(e){}
+  });
+})();
+</script>
+</body>
+</html>
