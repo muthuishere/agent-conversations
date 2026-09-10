@@ -1,0 +1,17 @@
+# Linux systemd (user unit). Install:
+#   cp this ~/.config/systemd/user/ && systemctl --user enable --now conversation-responder
+#   loginctl enable-linger $USER      # so it starts at boot, not at login
+[Unit]
+Description=Conversation responder (supervised)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/bin/bash %h/path/to/reference/skill/supervise.sh --tag main
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/.local/state/conversation-responder.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

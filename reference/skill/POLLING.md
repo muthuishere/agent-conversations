@@ -325,3 +325,55 @@ See it work offline, in about a minute:
 ```bash
 node examples/poll-demo.js
 ```
+
+---
+
+## Restarting the responder when it goes away
+
+The responder will go away. It ends its shift, or it crashes, or the box reboots.
+Plan for that rather than hoping.
+
+**The supervisor must not be an agent.** An agent supervising an agent moves the liveness
+problem up a level: now two things can die quietly, and the outer one has to *remember* to
+check. A shell loop blocked in `wait(2)` costs nothing and has nothing to forget.
+
+`supervise.sh` is that loop. It reads the responder's exit code and acts:
+
+| exit | meaning | supervisor does |
+|---|---|---|
+| `0` | answered a batch | respawn now — more may be queued |
+| `64` | nothing arrived | respawn now — the backoff tier does the waiting |
+| `75` | shift ended cleanly | respawn now with fresh context |
+| `69` | **the daemon** is dead | back off exponentially and alert; respawning cannot fix it |
+| other | unexpected | back off and alert |
+
+The `69` case is the one worth getting right. A dead daemon is not something the responder
+can repair, so hot-looping against it just burns CPU and buries the real error. Back off,
+make it loud, and let a human or the daemon's own supervisor deal with it.
+
+### Three layers, each supervising the one below
+
+```
+launchd / systemd   restarts the supervisor if it dies or the box reboots
+   └── supervise.sh restarts the responder every shift or crash
+        └── poll-responder.sh  answers, then ends its shift deliberately
+```
+
+Templates for the top layer are in `service/` — `KeepAlive` on macOS, `Restart=always` on
+Linux. Both should be installed with lingering enabled so they start at boot rather than at
+login; a responder that only runs while someone is logged in is a responder that is missing
+overnight.
+
+### Verifying it actually recovered
+
+Restarting is not the same as answering. The check that matters compares two things the
+daemon owns:
+
+```sh
+convo health                 # is the daemon fresh?
+convo journal --new          # are messages piling up unanswered?
+```
+
+**Daemon fresh + journal growing = the responder is gone**, whatever the process table says.
+That single comparison catches every silent-deafness variant, because it measures the
+outcome (messages being answered) instead of the mechanism (a process appearing to exist).

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS launchd. Install:
+       cp this ~/Library/LaunchAgents/ && launchctl load -w ~/Library/LaunchAgents/com.example.conversation-responder.plist
+     KeepAlive restarts it if it ever exits, so the supervisor itself is supervised. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.example.conversation-responder</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/ABSOLUTE/PATH/TO/reference/skill/supervise.sh</string>
+    <string>--tag</string><string>main</string>
+    <string>--answer-cmd</string><string>/ABSOLUTE/PATH/TO/your-answerer</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/tmp/conversation-responder.log</string>
+  <key>StandardErrorPath</key><string>/tmp/conversation-responder.log</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string></dict>
+</dict></plist>
