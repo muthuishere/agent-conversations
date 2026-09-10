@@ -255,3 +255,58 @@ convctl _test-inject --from "alice" --text "wake-test-$(date +%s)"
 Each step isolates a different layer. Don't skip to "the agent isn't responding" without walking
 this list — in practice most "the agent is ignoring messages" reports turn out to be step 1 or 3,
 not the agent's reasoning at all.
+
+---
+
+## 7. When there is no zero-cost wake: the subagent-hosted poller
+
+> *Added alongside [`poll-responder.sh`](poll-responder.sh) and
+> [`POLLING.md`](POLLING.md), which are the full treatment. This section is the
+> pointer and the two rules you must not get wrong.*
+
+§1 and §2 both assume something re-invokes you: a daemon-spawned handler (W2) or
+a runtime that wakes a session when a blocked process exits (W1). W1 is
+**runtime-specific** — some runtimes never turn a finished background shell into
+a prompt — and W2 is a *fresh* agent, so it cannot draw on what an attended
+session already knows.
+
+When you need an attended, context-carrying agent on a runtime whose wake path
+you cannot rely on, the portable answer is: **a subagent hosts a blocking poll
+with an escalating backoff.** The sleeps live in the shell script, so they cost
+zero tokens; a turn is spent only when the call returns.
+
+```bash
+reference/skill/poll-responder.sh --tag support \
+    --tiers 120,240,360 --max-block 540 \
+    --max-cycles 20 --max-runtime 1800 --answer-cmd './answer.sh'
+```
+
+**Rule one — the backoff tier must live on disk.** A foreground tool call is
+capped (~600s in Claude Code, less elsewhere), so one call cannot span a
+2+4+6-minute schedule. The tier is carried across invocations in
+`poll-responder.<tag>.json`, escalating on exit 64 and snapping back to the
+first tier the moment a message lands.
+
+**Rule two — the subagent is replaceable, never immortal.** Every returned poll
+grows its context, so it *will* end; and when it does, the daemon is still
+healthy and the journal still filling while **nobody is answering**. So bound
+the shift (`--max-cycles` / `--max-runtime`), let it exit **75** = "respawn me"
+— distinct from 64 "quiet" and 69 "dead" — and supervise it. The handoff is free
+because the subagent holds no state: journal, read cursor, ack file and the
+poller's tier file are all on disk.
+
+The check that catches a dead responder (daemon health alone will not — the
+daemon is fine):
+
+```bash
+convo health --tag support                                  # fresh? necessary, not sufficient
+convo journal --tag support --new --limit 5 --format compact
+#   fresh + nothing new              -> healthy and quiet
+#   fresh + unacked messages piling  -> THE RESPONDER IS GONE. Respawn it.
+#   stale/absent                     -> the daemon died; different problem
+```
+
+Cost, honestly: roughly **6–7 turns per idle hour** at `--max-block 540`, versus
+~120 for a naive `check; sleep 30` loop and zero for W1/W2. Cheap, not free —
+see the full table in [`POLLING.md`](POLLING.md) §4. Run `node
+examples/poll-demo.js` to watch the whole thing offline.
