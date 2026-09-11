@@ -1,0 +1,18 @@
+{
+    "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#teams",
+    "@odata.count": 1,
+    "value": [
+        {
+            "id": "b1e19f99-58ec-4721-826b-9a216d2d1212",
+            "displayName": "Contoso Mock",
+            "description": "Default simulated team",
+            "internalId": "19:b1e19f9958ec4721826b9a216d2d1212@thread.tacv2",
+            "classification": null,
+            "specialization": "none",
+            "visibility": "public",
+            "webUrl": "https://teams.microsoft.com/l/team/b1e19f99-58ec-4721-826b-9a216d2d1212",
+            "isArchived": false,
+            "createdDateTime": "2026-09-11T19:36:06.980Z"
+        }
+    ]
+}

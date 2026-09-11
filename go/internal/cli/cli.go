@@ -14,10 +14,12 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	memchan "github.com/muthuishere/agent-conversations/go/internal/channel/memory"
+	teamschan "github.com/muthuishere/agent-conversations/go/internal/channel/teams"
 	"github.com/muthuishere/agent-conversations/go/internal/convo"
 	"github.com/muthuishere/agent-conversations/go/internal/host/exechost"
 	"github.com/muthuishere/agent-conversations/go/internal/host/herdr"
@@ -57,6 +59,23 @@ type options struct {
 	all      bool
 	newOnly  bool
 	channel  string
+
+	// teams channel configuration. Nothing above the channel seam reads these;
+	// they exist here only because a CLI is where a human supplies them.
+	teamsBaseURL  string
+	teamsUser     string
+	teamsTokenEnv string
+	teamsScan     int
+
+	// ingest (fetch / listen)
+	in         string
+	prime      bool
+	once       bool
+	pollActive time.Duration
+	pollMid    time.Duration
+	pollIdle   time.Duration
+	idle1      time.Duration
+	idle2      time.Duration
 }
 
 const usage = `convo — a generic agent-conversation CLI.
@@ -65,6 +84,8 @@ const usage = `convo — a generic agent-conversation CLI.
   convo host list                     discover addressable agents
   convo host state <name>             one agent's state
   convo host deliver <name> <text>    hand a message over, respecting backpressure
+  convo fetch                         one ingest pass: channel -> journal
+  convo listen [--once]               fetch on a loop, with adaptive backoff
   convo journal [--new]               look at the durable log (never consumes)
   convo next [--count n] [--ack]      hand outstanding messages to this consumer
   convo ack <id...> | --all           mark messages processed
@@ -76,9 +97,24 @@ Global flags:
   --exec-cmd '<cmd>'  command for the exec host (or $CONVO_EXEC_CMD)
   --tag <t>           partition the journal/cursors (default $CONVO_TAG or "default")
   --home <dir>        state directory (default $AGENT_CONVERSATIONS_HOME)
-  --channel <name>    the transport (built in: memory). No default: a reply with
-                      nowhere to go must fail loudly, not silently succeed.
+  --channel <name>    the transport (built in: memory, teams). No default: a reply
+                      with nowhere to go must fail loudly, not silently succeed.
   --json              machine-readable output
+
+Teams channel flags (or the matching $CONVO_TEAMS_* env var):
+  --teams-base-url <u>   Graph root, no trailing slash. $CONVO_TEAMS_BASE_URL
+  --teams-token-env <V>  NAME of the env var holding the bearer token — never the
+                         token itself. $CONVO_TEAMS_TOKEN_ENV
+  --teams-user <name>    x-user-name, for a Graph-shaped simulator only.
+                         $CONVO_TEAMS_USER
+  --teams-scan-depth <n> threads per channel scanned for replies (default 10)
+
+Ingest flags (fetch, listen):
+  --in <needle>       only conversations whose id or name matches
+  --prime             on a conversation with no cursor yet, jump to NOW instead
+                      of replaying its whole history into the journal
+  --once              listen: run exactly one pass and exit
+  --poll-active/-mid/-idle, --idle-1, --idle-2   adaptive backoff tiers
 
 Exit codes: 0 ok · 64 nothing/timeout · 65 bad args or not configured ·
 66 conflict/busy · 69 host or target unavailable · 70 self-delivery refused ·
@@ -141,6 +177,18 @@ func (a *App) run(ctx context.Context, argv []string) error {
 	fs.BoolVar(&o.all, "all", false, "")
 	fs.BoolVar(&o.newOnly, "new", false, "")
 	fs.StringVar(&o.channel, "channel", a.env("CONVO_CHANNEL", ""), "")
+	fs.StringVar(&o.teamsBaseURL, "teams-base-url", a.env("CONVO_TEAMS_BASE_URL", ""), "")
+	fs.StringVar(&o.teamsUser, "teams-user", a.env("CONVO_TEAMS_USER", ""), "")
+	fs.StringVar(&o.teamsTokenEnv, "teams-token-env", a.env("CONVO_TEAMS_TOKEN_ENV", ""), "")
+	fs.IntVar(&o.teamsScan, "teams-scan-depth", envInt(a.env("CONVO_TEAMS_SCAN_DEPTH", "0")), "")
+	fs.StringVar(&o.in, "in", "", "")
+	fs.BoolVar(&o.prime, "prime", false, "")
+	fs.BoolVar(&o.once, "once", false, "")
+	fs.DurationVar(&o.pollActive, "poll-active", defaultActive, "")
+	fs.DurationVar(&o.pollMid, "poll-mid", defaultMid, "")
+	fs.DurationVar(&o.pollIdle, "poll-idle", defaultIdle, "")
+	fs.DurationVar(&o.idle1, "idle-1", defaultIdle1, "")
+	fs.DurationVar(&o.idle2, "idle-2", defaultIdle2, "")
 
 	// Split positionals from flags so `host deliver a "--not a flag"` works:
 	// the text of a message is arbitrary and must never be parsed as options.
@@ -154,6 +202,10 @@ func (a *App) run(ctx context.Context, argv []string) error {
 		return a.cmdSelf(ctx, o)
 	case "host":
 		return a.cmdHost(ctx, o, args)
+	case "fetch":
+		return a.cmdFetch(ctx, o)
+	case "listen":
+		return a.cmdListen(ctx, o)
 	case "journal":
 		return a.cmdJournal(ctx, o)
 	case "next":
@@ -168,66 +220,80 @@ func (a *App) run(ctx context.Context, argv []string) error {
 	}
 }
 
-// splitArgs keeps message text out of the flag parser.
+// boolFlags are the flags that take no value.
 //
-// For `host deliver <name> <text>` everything after the name is the message,
-// verbatim. A message beginning with a dash is ordinary traffic on a real
-// channel, and a CLI that chokes on it is a CLI that drops messages.
-func splitArgs(cmd string, rest []string) (positional, flags []string) {
-	if cmd == "host" && len(rest) >= 1 {
-		// find the sub-verb
-		var sub string
-		var i int
-		for ; i < len(rest); i++ {
-			if !strings.HasPrefix(rest[i], "-") {
-				sub = rest[i]
-				break
-			}
-			flags = append(flags, rest[i])
-		}
-		if sub == "" {
-			return nil, flags
-		}
-		positional = append(positional, sub)
-		i++
-		if sub == "deliver" {
-			// name, then everything else is text (minus leading flags)
-			for ; i < len(rest); i++ {
-				if strings.HasPrefix(rest[i], "--") && len(positional) < 2 {
-					flags = append(flags, rest[i])
-					continue
-				}
-				break
-			}
-			if i < len(rest) {
-				positional = append(positional, rest[i])
-				i++
-			}
-			if i < len(rest) {
-				positional = append(positional, strings.Join(rest[i:], " "))
-			}
-			return positional, flags
-		}
-		for ; i < len(rest); i++ {
-			if strings.HasPrefix(rest[i], "-") {
-				flags = append(flags, rest[i])
-				continue
-			}
-			positional = append(positional, rest[i])
-		}
-		return positional, flags
+// This set is what makes `--flag value` possible at all. Go's flag package can
+// only tell a value-taking flag from a boolean one AFTER it has been told which
+// is which, but the split between "options" and "message text" has to happen
+// BEFORE parsing, or arbitrary message text gets eaten as options. So the split
+// needs its own copy of that one fact, and this is it. A flag added below and
+// forgotten here would swallow the word after it; every value flag is safe by
+// default, which is the right way round for a tool whose payload is free text.
+var boolFlags = map[string]bool{
+	"json": true, "wait": true, "ack": true, "all": true, "new": true,
+	"prime": true, "once": true, "help": true, "h": true, "version": true,
+}
+
+// flagName strips the dashes and anything from `=` onwards.
+func flagName(s string) string {
+	name := strings.TrimLeft(s, "-")
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
 	}
-	if cmd == "respond" {
-		// <messageId> then everything else is the reply text, verbatim.
-		var i int
-		for ; i < len(rest); i++ {
-			if strings.HasPrefix(rest[i], "-") && len(positional) == 0 {
+	return name
+}
+
+// isFlag reports whether a token opens a flag. A bare "-" is not a flag, and
+// neither is anything that does not start with one.
+func isFlag(s string) bool { return len(s) > 1 && strings.HasPrefix(s, "-") }
+
+// takesValue reports whether a flag token consumes the NEXT argument.
+// `--flag=value` carries its own value and consumes nothing.
+func takesValue(s string) bool {
+	if strings.ContainsRune(s, '=') {
+		return false
+	}
+	return !boolFlags[flagName(s)]
+}
+
+// splitArgs separates options from positionals, and keeps message text out of
+// the flag parser entirely.
+//
+// Two properties, and they pull against each other, which is why this is not
+// just `flag.Parse`:
+//
+//   - BOTH spellings work: `--count=10` and `--count 10`. A CLI that silently
+//     accepts only one of them is a CLI whose documented examples fail, and
+//     "flag needs an argument" is a particularly unhelpful way to learn that.
+//   - Message text is VERBATIM. For `host deliver <name> <text>` and
+//     `respond <id> <text>`, everything after the positional is the message,
+//     including words that look exactly like flags. A message beginning with a
+//     dash is ordinary traffic on a real channel, and a CLI that chokes on it
+//     is a CLI that drops messages.
+func splitArgs(cmd string, rest []string) (positional, flags []string) {
+	// scanFlags consumes leading options, stopping at the first non-flag.
+	// It returns the index it stopped at.
+	scanFlags := func(i int) int {
+		for i < len(rest) && isFlag(rest[i]) {
+			flags = append(flags, rest[i])
+			if takesValue(rest[i]) && i+1 < len(rest) {
+				i++
 				flags = append(flags, rest[i])
-				continue
 			}
-			break
+			i++
 		}
-		if i < len(rest) {
+		return i
+	}
+
+	// verbatimAfter takes `n` positionals (scanning flags in between) and then
+	// joins everything that is left, untouched, as one final positional.
+	verbatimAfter := func(n int) ([]string, []string) {
+		i := 0
+		for len(positional) < n {
+			i = scanFlags(i)
+			if i >= len(rest) {
+				break
+			}
 			positional = append(positional, rest[i])
 			i++
 		}
@@ -236,14 +302,56 @@ func splitArgs(cmd string, rest []string) (positional, flags []string) {
 		}
 		return positional, flags
 	}
-	for _, s := range rest {
-		if strings.HasPrefix(s, "-") {
-			flags = append(flags, s)
-		} else {
-			positional = append(positional, s)
+
+	// scanAll takes options and positionals in any order, to the end.
+	scanAll := func() ([]string, []string) {
+		for i := 0; i < len(rest); i++ {
+			if isFlag(rest[i]) {
+				flags = append(flags, rest[i])
+				if takesValue(rest[i]) && i+1 < len(rest) {
+					i++
+					flags = append(flags, rest[i])
+				}
+				continue
+			}
+			positional = append(positional, rest[i])
 		}
+		return positional, flags
 	}
-	return positional, flags
+
+	switch cmd {
+	case "host":
+		// The sub-verb comes first; only `deliver` has free text after it.
+		i := scanFlags(0)
+		if i >= len(rest) {
+			return nil, flags
+		}
+		sub := rest[i]
+		positional = append(positional, sub)
+		rest = rest[i+1:]
+		if sub == "deliver" {
+			// <name>, then everything else is the message, verbatim.
+			return verbatimAfter(2)
+		}
+		return scanAll()
+
+	case "respond":
+		// <messageId>, then everything else is the reply, verbatim.
+		return verbatimAfter(1)
+	}
+
+	return scanAll()
+}
+
+// envInt reads a small integer from an environment value, treating anything
+// unparseable as unset rather than failing: a malformed tuning knob must not
+// stop the tool from running.
+func envInt(s string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 func (a *App) env(key, def string) string {
@@ -290,6 +398,8 @@ func (a *App) channel(o options) (convo.Channel, error) {
 		// In-process only: useful in a test or a demo, useless across
 		// processes. Says so rather than pretending.
 		return memchan.New(), nil
+	case "teams":
+		return a.teamsChannel(o)
 	case "":
 		return nil, convo.Wrap(convo.ErrNotConfigured,
 			"no channel configured — pass --channel or $CONVO_CHANNEL; refusing to "+
@@ -297,6 +407,41 @@ func (a *App) channel(o options) (convo.Channel, error) {
 	default:
 		return nil, convo.Wrap(convo.ErrNotConfigured, "unknown channel %q", o.channel)
 	}
+}
+
+// teamsChannel builds the Graph-shaped channel from flags and environment.
+//
+// The token is taken BY THE NAME of an environment variable, never by value.
+// A CLI that accepts `--teams-token <secret>` puts that secret in the shell
+// history, in `ps` output, and in every log line that echoes the command — so
+// this one takes `--teams-token-env AUTH_VAR` and reads the value itself. The
+// value is never printed, and no error message below ever contains it.
+func (a *App) teamsChannel(o options) (convo.Channel, error) {
+	if strings.TrimSpace(o.teamsBaseURL) == "" {
+		return nil, convo.Wrap(convo.ErrNotConfigured,
+			"--channel teams needs --teams-base-url (or $CONVO_TEAMS_BASE_URL), "+
+				"e.g. https://graph.microsoft.com/v1.0")
+	}
+	cfg := teamschan.Config{
+		BaseURL:        o.teamsBaseURL,
+		UserName:       o.teamsUser,
+		ReplyScanDepth: o.teamsScan,
+	}
+	if o.teamsTokenEnv != "" {
+		tok := a.env(o.teamsTokenEnv, "")
+		if tok == "" {
+			// Name the VARIABLE, never the value. Failing loudly here is the
+			// point: an unauthenticated listener against a real tenant gets
+			// 401s that look exactly like a quiet channel.
+			return nil, convo.Wrap(convo.ErrNotConfigured,
+				"$%s is empty — refusing to talk to Teams with no credential", o.teamsTokenEnv)
+		}
+		if !strings.Contains(tok, " ") {
+			tok = "Bearer " + tok
+		}
+		cfg.Authorization = tok
+	}
+	return teamschan.New(cfg)
 }
 
 func (a *App) store(o options) (*filestore.Store, error) {

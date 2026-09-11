@@ -1,0 +1,11 @@
+{
+    "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#me",
+    "id": "85d2185b-8f72-4d8f-8575-82ea4880a610",
+    "displayName": "convo-agent",
+    "givenName": "convo-agent",
+    "surname": null,
+    "userPrincipalName": "convo.agent@mockteams.local",
+    "mail": "convo.agent@mockteams.local",
+    "jobTitle": null,
+    "userType": "Member"
+}

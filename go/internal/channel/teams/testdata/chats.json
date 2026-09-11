@@ -1,0 +1,32 @@
+{
+    "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#chats",
+    "@odata.count": 1,
+    "value": [
+        {
+            "id": "a0a6b1ec-cb4c-4a6f-80e1-e6edc07246e8",
+            "topic": null,
+            "chatType": "oneOnOne",
+            "createdDateTime": "2026-09-11T19:36:07.105Z",
+            "lastUpdatedDateTime": "2026-09-11T19:36:07.105Z",
+            "webUrl": "https://teams.microsoft.com/l/chat/a0a6b1ec-cb4c-4a6f-80e1-e6edc07246e8/conversations",
+            "members": [
+                {
+                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                    "id": "85d2185b-8f72-4d8f-8575-82ea4880a610",
+                    "roles": [],
+                    "displayName": "convo-agent",
+                    "userId": "85d2185b-8f72-4d8f-8575-82ea4880a610",
+                    "email": "convo.agent@mockteams.local"
+                },
+                {
+                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
+                    "id": "392b1a78-1b52-4fc0-9756-f8eafe592bce",
+                    "roles": [],
+                    "displayName": "Bob Martin",
+                    "userId": "392b1a78-1b52-4fc0-9756-f8eafe592bce",
+                    "email": "bob.martin@mockteams.local"
+                }
+            ]
+        }
+    ]
+}

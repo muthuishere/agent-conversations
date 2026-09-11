@@ -1,0 +1,33 @@
+{
+    "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#channels",
+    "@odata.count": 3,
+    "value": [
+        {
+            "id": "19:b39cd6954d0f41989e186d42f9b3c174@thread.tacv2",
+            "displayName": "General",
+            "description": "Team-wide announcements",
+            "email": "general@mockteams.local",
+            "webUrl": "https://teams.microsoft.com/l/channel/19%3Ab39cd6954d0f41989e186d42f9b3c174%40thread.tacv2",
+            "membershipType": "standard",
+            "createdDateTime": "2026-09-11T19:36:06.980Z"
+        },
+        {
+            "id": "19:75b5341d7f2045d58a8165f26d5204db@thread.tacv2",
+            "displayName": "Engineering",
+            "description": "Build talk",
+            "email": "engineering@mockteams.local",
+            "webUrl": "https://teams.microsoft.com/l/channel/19%3A75b5341d7f2045d58a8165f26d5204db%40thread.tacv2",
+            "membershipType": "standard",
+            "createdDateTime": "2026-09-11T19:36:06.980Z"
+        },
+        {
+            "id": "19:4978ec497d6142d394a43f36e4399581@thread.tacv2",
+            "displayName": "Random",
+            "description": "Off topic",
+            "email": "random@mockteams.local",
+            "webUrl": "https://teams.microsoft.com/l/channel/19%3A4978ec497d6142d394a43f36e4399581%40thread.tacv2",
+            "membershipType": "standard",
+            "createdDateTime": "2026-09-11T19:36:06.980Z"
+        }
+    ]
+}

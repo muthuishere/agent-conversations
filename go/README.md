@@ -1,9 +1,19 @@
 # `convo` — a generic Go CLI for agent conversations
 
-A single static binary, Go 1.26, **standard library only, zero third-party
-dependencies**. It is mostly an *interface*: three seams defined cleanly so any
-channel and any agent-host can be plugged in, with enough behind each seam to
-prove the shape is right.
+A single static binary, Go 1.26, **standard library only, zero third-party Go
+modules**.
+
+**Prerequisite: the agent host.** `convo` delivers into an agent through Herdr,
+and that is not one option among several — it is a required dependency. Install
+it before anything here does anything useful; `convo self` tells you whether you
+are inside a pane. The reasoning and the measurements behind fixing the host are
+in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §4.
+
+**The channel is the plugin axis.** Because the host is fixed, the growth is
+sideways: Teams today, WhatsApp next, whatever after that. Adding one is a new
+package under `internal/channel/` implementing four methods, and nothing above it
+changes — [`internal/channel/README.md`](internal/channel/README.md) is the
+guide.
 
 The prose in [`../ARCHITECTURE.md`](../ARCHITECTURE.md),
 [`../INTERFACES.md`](../INTERFACES.md) and
@@ -28,7 +38,7 @@ for and what it must *not* do.
 | interface | file | question it answers |
 |---|---|---|
 | **`Channel`** | [`internal/convo/channel.go`](internal/convo/channel.go) | where do messages come from, and where do replies go? |
-| **`Host`** | [`internal/convo/host.go`](internal/convo/host.go) | where do agents live, and how is a message handed to one? |
+| **`Host`** | [`internal/convo/host.go`](internal/convo/host.go) | where do agents live, and how is a message handed to one? (**answer: Herdr**) |
 | **`Store`** | [`internal/convo/store.go`](internal/convo/store.go) | what survives a crash, and what counts as delivered? |
 
 ```go
@@ -55,14 +65,28 @@ Plus the canonical envelope of `ARCHITECTURE.md` §5.2 as a struct
 
 | package | implements | why it is here |
 |---|---|---|
-| [`internal/host/herdr`](internal/host/herdr) | `Host` | the **guest** path — shells out to a real workspace manager, respects backpressure, refuses to prompt its own pane |
-| [`internal/host/exechost`](internal/host/exechost) | `Host` | the **owner** path — spawns a fresh agent per message; the portable floor (W2) |
+| [`internal/host/herdr`](internal/host/herdr) | `Host` | **the delivery path.** Shells out to the agent host, respects backpressure, refuses to prompt its own pane |
+| [`internal/host/exechost`](internal/host/exechost) | `Host` | **a test double and a reference for the interface** — spawns a fresh agent per message. Not the recommended path; see below |
+| [`internal/channel/teams`](internal/channel/teams) | `Channel` | a real second channel: Microsoft Graph over HTTP — paging, delta cursors, threaded replies, throttling |
 | [`internal/channel/memory`](internal/channel/memory) | `Channel` | an in-process fake so the whole system is testable offline |
 | [`internal/store/file`](internal/store/file) | `Store` | the NDJSON journal + read cursor + acks of `INTERFACES.md` §2 |
 
-The two hosts are deliberately as different as two implementations can be:
+### Why `Host` and `exechost` still exist
 
-|  | `herdr` | `exechost` |
+Herdr is mandatory, so it is fair to ask why there is an interface in front of it
+at all. Two reasons, and neither is decoration:
+
+1. **`Host` is what makes the delivery path testable with no host running.** The
+   self-delivery guard is asserted end to end against a **fake host binary** — a
+   shell script in `t.TempDir()` — so real argv construction, process spawn, exit
+   codes and stdout parsing all execute offline. Delete the interface and those
+   tests go with it. It is not dead abstraction; do not remove it.
+2. **A single implementation behind an interface is indirection, not an
+   interface.** `exechost` is as different from `herdr` as two things can be and
+   still be "hand a message to an agent", which is the evidence the seam is in
+   the right place.
+
+|  | `herdr` (the path) | `exechost` (the double) |
 |---|---|---|
 | lifecycle | someone else's | ours |
 | backpressure | real — `idle`/`working`/`blocked` | none; we start it |
@@ -70,9 +94,9 @@ The two hosts are deliberately as different as two implementations can be:
 | the reply | the agent posts it itself | captured from stdout |
 | cold start | none | one per message |
 
-A single implementation behind an interface is not an interface, it is
-indirection. If `Host` fits both of those, it will fit tmux, SSH, a container,
-or an HTTP agent service.
+`exechost` was once described here as "the portable floor". It is not that any
+more — the floor is Herdr. Keep it for the two reasons above, and for the honest
+record in `ARCHITECTURE.md` §4 of what was measured.
 
 ---
 
@@ -83,6 +107,8 @@ convo self                          am I inside an agent host, and which agent a
 convo host list                     discover addressable agents
 convo host state <name>             one agent's state
 convo host deliver <name> <text>    hand a message over, respecting backpressure
+convo fetch                         one ingest pass: channel -> journal
+convo listen [--once]               fetch on a loop, with adaptive backoff
 convo journal [--new]               look at the durable log (NEVER consumes)
 convo next [--count n] [--ack]      hand outstanding messages to this consumer
 convo ack <id...> | --all           mark messages processed
@@ -90,22 +116,46 @@ convo respond <messageId> <text>    reply, routed from the message's own source
 convo version
 ```
 
-Global flags: `--host herdr|exec` · `--exec-cmd '<cmd>'` · `--channel <name>` ·
+Global flags: `--host herdr|exec` (default `herdr`; `exec` is the spawning test
+double, not a supported deployment) · `--exec-cmd '<cmd>'` · `--channel <name>` ·
 `--tag <t>` · `--home <dir>` · `--json` · `--wait` · `--timeout <dur>`.
 
-Environment: `CONVO_HOST`, `CONVO_EXEC_CMD`, `CONVO_CHANNEL`, `CONVO_TAG`,
-`AGENT_CONVERSATIONS_HOME`.
+Ingest flags (`fetch`, `listen`): `--in <needle>` · `--prime` · `--once` ·
+`--poll-active/-mid/-idle` · `--idle-1` · `--idle-2`.
 
-`--channel` has **no default**, and the only built-in is `memory` (in-process;
-a test double, useless across processes). A real deployment implements
-`convo.Channel` and wires it in — that is the transport seam. An unconfigured
-`respond` exits **65** rather than reporting a reply as sent when it had
-nowhere to go.
+Teams flags: `--teams-base-url <url>` · `--teams-token-env <VAR>` ·
+`--teams-user <name>` · `--teams-scan-depth <n>`.
+
+Environment: `CONVO_HOST`, `CONVO_EXEC_CMD`, `CONVO_CHANNEL`, `CONVO_TAG`,
+`AGENT_CONVERSATIONS_HOME`, `CONVO_TEAMS_BASE_URL`, `CONVO_TEAMS_TOKEN_ENV`,
+`CONVO_TEAMS_USER`, `CONVO_TEAMS_SCAN_DEPTH`.
+
+`--channel` has **no default**. Two are built in: `memory` (in-process; a test
+double, useless across processes) and `teams`, the real adapter that
+[`internal/channel/README.md`](internal/channel/README.md) documents. `teams`
+needs a base URL and, against a real tenant, a credential — and the credential
+is passed **by the NAME of an environment variable**, never by value:
+
+```
+convo listen --channel teams \
+  --teams-base-url https://graph.microsoft.com/v1.0 \
+  --teams-token-env TEAMS_BEARER
+```
+
+`--teams-token-env TEAMS_BEARER` makes the CLI read `$TEAMS_BEARER` itself, so
+the secret never reaches the shell history, `ps` output, or a log line that
+echoes the command. `--teams-user` is a Graph-shaped simulator affordance and a
+real tenant ignores it.
+
+An unconfigured `respond` exits **65** rather than reporting a reply as sent
+when it had nowhere to go.
 
 ### `convo self` — the one that matters
 
 Run inside a host pane it reports the pane context **and which agent it is**,
-found by matching `HERDR_PANE_ID` against the discovery list:
+found by matching the host's pane id (`HERDR_PANE_ID`) against the discovery
+list. Because the host is a hard prerequisite, that id is always there when it
+matters — which is what makes the self-delivery guard possible at all:
 
 ```
 $ convo self
@@ -235,23 +285,46 @@ without a drain, "queue in the journal" is "leak into the journal".
   (including `raw`);
 - the memory channel round trip, including self-echo suppression and the fact
   that a channel reply lands in a **thread** — verifying the room instead of the
-  thread is how a successful run looks like a total failure.
+  thread is how a successful run looks like a total failure;
+- **the Teams channel, against recorded JSON fixtures** captured from a real
+  Graph-shaped server: discovery, self-echo suppression, threaded replies picked
+  up through a composite cursor, a quiet second poll, the send-routing table
+  (dm / thread / new thread / kind mismatch / unknown id / empty text), a 429
+  retried with `Retry-After`, and the assertion that a channel id reaches the
+  wire percent-encoded — `19:…@thread.tacv2` unencoded is a 404 on every request
+  and a silently deaf listener. That last one caught a real bug before any live
+  server did.
 
-A live test against a real host exists and is **skipped by default**; it is
-read-only and opt-in:
+Two live tests exist and both are **skipped by default**:
 
 ```bash
-CONVO_LIVE_HERDR=1 go test ./internal/host/herdr/ -run Live -v
+CONVO_LIVE_HERDR=1 go test ./internal/host/herdr/  -run Live -v   # read-only
+CONVO_LIVE_TEAMS=1 go test ./internal/channel/teams/ -run Live -v  # writes
 ```
 
-It is gated on an env var rather than on "is a socket present", because a test
-that talks to whatever workspace happens to be open is a test that injects text
-into somebody's work.
+They are gated on an env var rather than on "is something listening", because a
+test that talks to whatever happens to be running is a test that injects text
+into somebody's work, or posts into somebody's channel.
+
+The host one is read-only on purpose. The Teams one **writes**, because the thing
+being proved cannot be proved any other way: a person posts, the message is
+fetched through the `Channel`, a reply is sent, and then the reply is **read back
+out of the thread**. Point it only at a simulator you own
+(`CONVO_LIVE_TEAMS_URL`, default `http://127.0.0.1:4000/v1.0`). Verify the
+artifact, never the exit code.
 
 ---
 
 ## Using it from inside an agent pane
 
 See [`../reference/skill/HERDR.md`](../reference/skill/HERDR.md) — the
-agent-facing doc, including the reply-path rule, the consent-gating boundary,
-and the honest warnings about context contamination.
+agent-facing doc for **the** delivery path, including the reply-path rule, the
+consent-gating boundary, and the honest warnings about context contamination.
+
+## Adding a channel
+
+[`internal/channel/README.md`](internal/channel/README.md) — the four methods and
+what each must guarantee, opaque and composite cursors, the envelope mapping,
+self-echo suppression, reply-target routing, rate limits and backoff, what
+belongs in the channel versus what the daemon already does for you, a checklist,
+and the shape of WhatsApp and Slack next to the verified Teams one.

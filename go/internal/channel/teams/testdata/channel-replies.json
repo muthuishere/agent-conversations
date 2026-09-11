@@ -1,0 +1,45 @@
+{
+    "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#messages",
+    "@odata.count": 1,
+    "value": [
+        {
+            "id": "1789155367098003",
+            "replyToId": "1789155367080001",
+            "etag": "1789155367098003",
+            "messageType": "message",
+            "createdDateTime": "2026-09-11T19:36:07.098Z",
+            "lastModifiedDateTime": "2026-09-11T19:36:07.098Z",
+            "lastEditedDateTime": null,
+            "deletedDateTime": null,
+            "subject": null,
+            "summary": null,
+            "chatId": null,
+            "importance": "normal",
+            "locale": "en-us",
+            "webUrl": "https://teams.microsoft.com/l/message/19%3Ab39cd6954d0f41989e186d42f9b3c174%40thread.tacv2/1789155367098003",
+            "channelIdentity": {
+                "teamId": "b1e19f99-58ec-4721-826b-9a216d2d1212",
+                "channelId": "19:b39cd6954d0f41989e186d42f9b3c174@thread.tacv2"
+            },
+            "policyViolation": null,
+            "eventDetail": null,
+            "from": {
+                "application": null,
+                "device": null,
+                "user": {
+                    "@odata.type": "#microsoft.graph.teamworkUserIdentity",
+                    "id": "f4d1182b-65a6-403c-8062-a1939f91278e",
+                    "displayName": "Carol Danvers",
+                    "userIdentityType": "aadUser"
+                }
+            },
+            "body": {
+                "contentType": "text",
+                "content": "same question here"
+            },
+            "attachments": [],
+            "mentions": [],
+            "reactions": []
+        }
+    ]
+}
