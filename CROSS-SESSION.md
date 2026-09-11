@@ -12,10 +12,12 @@ addressable targets — Herdr is the one referenced here — but the reasoning a
 arrangement where the agent's lifecycle belongs to someone else: a human's terminal, a
 teammate's session, a pane started hours ago for an unrelated task.
 
-> **Status of the Herdr specifics below:** read from the CLI's own contract
-> (`herdr agent --help` on 0.8.2), **not measured** — no server was running at the time of
-> writing. Verify before depending on any of it. This repo's house rule is that a claim you
-> haven't run is an assumption wearing a lab coat.
+> **Status: MEASURED.** Run end to end on Herdr 0.8.2 against a simulated Teams channel —
+> a message posted by a person reached a `claude` agent in a Herdr pane and its reply came
+> back into the channel in **7.6s**. The `working`, `blocked` and `gone` paths were each
+> exercised for real. Four of this document's original `--help`-derived claims were **wrong**
+> and are corrected below; they are called out explicitly rather than quietly fixed, because
+> the difference between reading a `--help` and running the command is the whole lesson.
 
 ---
 
@@ -227,29 +229,86 @@ collaborating with it live, or it is mid-task on the very thing being asked abou
 
 ---
 
-## 10. Reference shape
+## 10. Reference shape — corrected against a real run
+
+The original version of this section was written from `herdr agent --help` and was wrong in
+four ways. The real interface:
+
+- **`agent list` and `agent get` take no options at all.** There is no `--json` (only
+  `agent explain` has one); they emit JSON unconditionally.
+- **The response is enveloped**, not a bare array:
+  `{"id":"cli:agent:list","result":{"agents":[{"name":…,"agent_status":…,"pane_id":…}]}}`
+- **There is no `.id` field on an agent.** The address is `name` or `pane_id`. Every verb
+  takes the **name directly**, so resolving to an id is not just unnecessary — it manufactures
+  the stale-id hazard §9 warns about.
+- **The state field is `agent_status`**, at `.result.agent.agent_status` — not `.status`.
+- Errors come back as **JSON on stdout**; `get`/`wait`/`prompt` exit **1** on a missing
+  target, `list` exits 0 with an empty array. A handler that checks only `$?` will miss the
+  reason.
 
 ```sh
-# resolve, by name, every time
-target="$(herdr agent list --json | jq -r '.[] | select(.name=="responder-a") | .id')"
-[ -n "$target" ] || fallback_to_owned_session
+# address by NAME, every time. no id resolution, no caching.
+state=$(herdr agent get responder-a \
+        | python3 -c 'import sys,json; d=json.load(sys.stdin)
+print((d.get("result") or {}).get("agent",{}).get("agent_status","absent"))' 2>/dev/null) \
+        || state=absent
 
-# only when idle; never into blocked
-state="$(herdr agent get "$target" --json | jq -r .status)"
 case "$state" in
-  idle)          ;;
-  working)       herdr agent wait "$target" --until idle --timeout 60000 || fallback ;;
-  blocked)       alert "target needs a human"; exit 0 ;;   # leave unacked
-  *)             fallback_to_owned_session ;;
+  idle)    ;;
+  working) herdr agent wait responder-a --until idle --timeout 60000 >/dev/null || fallback ;;
+  blocked) alert "target needs a human"; exit 0 ;;   # leave unacked, see §11
+  *)       fallback_to_owned_session ;;
 esac
 
-# deliver with the reply path baked in; one in flight per target
-herdr agent prompt "$target" \
+herdr agent prompt responder-a \
   "[message $MSG_ID from $FROM in $CONV] $TEXT
-Reply with: convo respond $MSG_ID \"<your answer>\"" \
+Reply with: TEAMSCTL_HOME=$HOME_DIR $ABS_CLI respond $MSG_ID \"<your answer>\"" \
   --wait --until idle --timeout 120000
 ```
 
-`jq` is used for brevity; the daemon in this repo ships without it. Check the host's actual
-JSON flags before copying — and run this against a live host before trusting it, because
-none of the above has been measured.
+Note what the reply line carries: an **absolute path to the CLI**, the **config dir**, and
+the **message id**. The guest is a different process with a different PATH and a different
+environment — omit any one of the three and the agent tries to reply and silently cannot.
+That is the strongest argument for §5's footnote: put the standing instruction in the
+consent-gated registration, and keep the per-message line to the id and the text.
+
+`herdr agent read` is the one verb that returns **raw terminal text, not JSON**. Don't parse it.
+
+---
+
+## 11. What the run taught us that the design missed
+
+**The host enforces `blocked` too.** `herdr agent prompt` against a blocked agent returns
+`{"error":{"code":"agent_blocked"}}` "before any input is sent". The guest's job is therefore
+**detect and report**, not prevent — the dangerous case was never going to slip through.
+
+**Unacked is not the same as retried — this is a real hole.** §4 says to queue an
+undeliverable message in the journal. It does survive there. But `--on-batch` fires once per
+*new* message, so **a message the handler declined is never offered again.** Three messages
+sat unacked at the end of the run and nothing ever came back for them. "Queue in the journal"
+without a drain is "leak into the journal". Add an explicit drain — poll `inbox --new` on a
+timer, or drain on the next `idle` transition — or accept that a declined message needs a
+human.
+
+**Context contamination is real, and it nearly escaped.** The pane's transcript is one linear
+thread mixing the owner's task with four strangers' questions. While answering one person's
+question about a capital city, the session volunteered *"The earlier touch command for the
+probe file was rejected and was not run"* — state from a different person's message bleeding
+into an unrelated answer. It did not reach the channel that time. It was one sentence away.
+**Consent-gating is not politeness; it is the containment boundary.**
+
+**Discovery lies by omission.** `herdr status` reports only the default socket. Five servers
+were running under named sessions while it said `not running`. A guest that probes with
+`status` will conclude no host exists when one does — check `HERDR_SOCKET_PATH` and named
+sessions before falling back.
+
+**A stale environment poisons the host.** `HERDR_ENV=1` left in a tmux server's *global*
+environment makes every pane look nested, and bare `herdr` refuses with
+`nested herdr is disabled by default` without saying why. Launch with a scrubbed env.
+
+**Verification tooling is narrower than the send path.** Replies are threaded, so reading the
+channel back shows **nothing** — the first read of the run looked like a total failure. The
+artifact is the thread, not the channel. And a thread lookup resolved against the configured
+channel only, so a reply correctly routed to a *different* channel could not be read back at
+all. When you write "verify the artifact", name the exact command, or someone will verify the
+wrong surface and draw the wrong conclusion.
