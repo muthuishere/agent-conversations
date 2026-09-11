@@ -4,6 +4,17 @@
 > agents are running in the other panes. This is how you talk to them, and — more
 > importantly — the four things you must not do.*
 
+**This is THE delivery path, not one of several.** The agent host is a required
+dependency: every message handed to an agent goes through it. There is no
+supported fallback that types into a pane, watches for a background process to
+exit, or scrapes a terminal to find out whether it was heard. Those were all
+built and measured, and the comparison — which is why the host is fixed — is in
+[`ARCHITECTURE.md`](../../ARCHITECTURE.md) §4. Do not reach for them.
+
+What that buys you, on every single delivery: a **typed state** for the target
+(`idle`/`working`/`blocked`/`done`/`unknown`), a **stable name** to address, and
+**your own pane id**, which is the only reason you can refuse to prompt yourself.
+
 Everything here assumes the `convo` CLI from [`../../go/`](../../go/) is on the
 machine. [`CROSS-SESSION.md`](../../CROSS-SESSION.md) is the reasoning; this is
 the operating discipline. Read that one when something surprises you.
@@ -71,8 +82,10 @@ convo host state responder-b     # -> idle | working | blocked | done | unknown
 | `blocked` | **do not deliver.** Alert a human, hold the message | **75** |
 | `done` / `unknown` / absent | treat as gone — fall back | **69** |
 
-`convo host deliver` applies all of this for you. It is still worth knowing,
-because the exit codes are how you decide what to do next:
+`convo host deliver` applies all of this for you — which is the point of a host
+being mandatory: the policy is enforced in one place rather than re-guessed per
+caller. It is still worth knowing, because the exit codes are how you decide what
+to do next:
 
 ```bash
 convo host deliver responder-b "$TEXT"
@@ -214,20 +227,28 @@ explanation. Launch a session with a scrubbed environment.
 
 ---
 
-## 8. Default to spawning your own
+## 8. Whose session should answer
 
-Injecting into a live session is the exception, not the rule.
+The host is fixed; **which agent** answers is still a choice, and it is a real
+one. Delivering into a session that already exists means joining a context that
+holds someone else's work.
 
-| | inject into an existing session | spawn/resume your own |
+| | deliver into an existing session | a session started for this purpose |
 |---|---|---|
 | context | theirs, plus your contamination | clean, per conversation |
-| latency | no cold start | cold start per message |
-| lifecycle | not yours; can vanish | yours; supervised |
+| latency | no cold start | cold start per conversation |
+| lifecycle | not yours; can vanish | yours; supervised by the host |
 | capabilities | whatever the owner granted | whatever you grant |
-| backpressure | must respect `working` / `blocked` | none — you started it |
+| backpressure | must respect `working` / `blocked` | still real — the host reports it either way |
 
-Reach for injection when there is a specific reason the answer must come from
-*that* session: it holds state you cannot reconstruct, a human is collaborating
-with it live, or it is mid-task on the very thing being asked about. Otherwise
-`convo --host exec` (or the session router in [`SESSIONS.md`](SESSIONS.md))
-gives you a clean context you actually control.
+Default to a session that **registered itself as a responder** — see the
+consent-gating rule in §7. Deliver into someone else's working session only when
+there is a specific reason the answer must come from *that* one: it holds state
+you cannot reconstruct, a human is collaborating with it live, or it is mid-task
+on the very thing being asked about.
+
+Either way the mechanism is the same command. `convo --host exec` spawns a fresh
+process instead, and it exists as a **test double and a reference for the
+interface** — useful when you are proving out a handler with no host in the
+picture, not a deployment you should ship. The session router in
+[`SESSIONS.md`](SESSIONS.md) is how you keep one conversation reaching one agent.

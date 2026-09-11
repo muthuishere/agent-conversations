@@ -40,7 +40,7 @@ Every real design is about **who does the invoking**, and the answer is never "t
 | Concern | Owner | Lifetime | Cost |
 |---|---|---|---|
 | **Receiving** — get messages out of the channel, durably | daemon | forever | ~zero, no model |
-| **Waking** — tell an agent something arrived | tripwire (blocked process / spawn / injection) | per message | zero while idle |
+| **Waking** — hand the message to an agent | the agent host (Herdr) | per message | zero while idle |
 | **Answering** — decide and reply | agent | one turn per batch | the only real cost |
 
 Everything below follows from this split.
@@ -63,44 +63,98 @@ Everything below follows from this split.
    │  · suppress: drop our own messages                      │
    │  · append: durable journal (append-only)                │
    │  · heartbeat: prove liveness                            │
-   │  · dispatch: optional handler spawn                     │
-   └───────┬──────────────────────────────┬─────────────────┘
-           │ journal (file/db)            │ spawn per batch
-           ▼                              ▼
-   ┌───────────────┐              ┌──────────────────┐
-   │ WAKE TRIPWIRE │              │ HANDLER (fresh)  │
-   │ blocked proc  │              │ headless agent   │
-   └───────┬───────┘              └──────────────────┘
-           │ exits → runtime re-invokes
+   │  · hand off: the host delivers this                     │
+   └───────┬────────────────────────────────────────────────┘
+           │ journal (file/db)
            ▼
-   ┌──────────────────────────────────────┐
-   │ AGENT + SKILL — one turn per batch    │
-   │  filter → decide → reply → re-arm     │
-   └──────────────────────────────────────┘
+   ┌────────────────────────────────────────────────────────┐
+   │ HOST — the agent host. REQUIRED. (Herdr)                │
+   │  · discovery: which agents are addressable, by name     │
+   │  · state: idle / working / blocked / done / unknown     │
+   │  · deliver: a real "submit a prompt" primitive          │
+   │  · backpressure: never into `blocked`, never into self  │
+   └───────────────────────┬────────────────────────────────┘
+                           ▼
+   ┌────────────────────────────────────────────────────────┐
+   │ AGENT + SKILL — one turn per batch                      │
+   │  filter → decide → reply → re-arm                       │
+   └────────────────────────────────────────────────────────┘
 ```
+
+The three boxes are the three seams in `go/internal/convo/`: `Channel` at the top, `Store` in
+the middle, `Host` at the bottom. Two of them have one implementation each that you are
+expected to use — the file store, and Herdr. **The top one is the plugin axis**, and
+[`go/internal/channel/README.md`](go/internal/channel/README.md) is how you add to it.
 
 ---
 
-## 4. The three wake mechanisms
+## 4. Waking an agent — and why the host is fixed
 
-There are only three, and a mature product implements at least two.
+**Decision: the agent host is a required dependency, and it is Herdr.** Delivery into an agent
+is always `Host`/Herdr. What follows is not a menu of co-equal options — it is the measurement
+that produced that decision, kept because the comparison *is* the justification.
 
-| # | Mechanism | Who invokes | Idle cost | Latency | Survives session death | Portability |
-|---|---|---|---|---|---|---|
-| **W1** | Blocked process exits → runtime re-invokes the session | the agent runtime | zero | instant | ✗ | runtime-specific |
-| **W2** | Daemon spawns a fresh headless agent per batch | the daemon | zero | spawn time | ✓ | **universal** |
-| **W3** | Keystroke injection into a live interactive session | external driver | zero | ~1s | ✗ | terminal-specific |
+### 4.1 What was measured
 
-**Choose by situation, not preference:**
+All four were built and run. The marks are observed, not estimated.
 
-- **W1** — an attended session that should react *now*. Cheapest and fastest, but only some
-  runtimes re-invoke on background-task exit. **Verify empirically; docs lie.**
-- **W2** — unattended, always-on, must survive everything. This is the floor: build it first,
-  because it is the only one guaranteed to exist everywhere.
-- **W3** — an already-idle interactive session that armed nothing. The only way to reach a
-  human-shaped session sitting at its prompt.
+| # | Mechanism | Who invokes | Idle cost | Latency | Survives session death | Typed states | Portability |
+|---|---|---|---|---|---|---|---|
+| **H** | **Agent host — a managed workspace submits the prompt** | the host | zero | **7.6s measured** end to end, including the agent's own turn | ✓ — the host outlives the caller | **✓ `idle`/`working`/`blocked`/`done`/`unknown`** | one dependency |
+| W1 | Blocked process exits → runtime re-invokes the session | the agent runtime | zero | instant | ✗ | ✗ | runtime-specific |
+| W2 | Spawn a fresh headless agent per batch | the daemon | zero | spawn time | ✓ | ✗ — we started it; there is nothing to ask | universal |
+| W3 | Keystroke injection into a live interactive session | external driver | zero | ~1s | ✗ | ✗ — scrape the pane and hope | terminal-specific |
 
-**Rule:** W1 and W3 are optimizations over W2. If W2 doesn't work, you don't have a product.
+Each of the last three carried a defect, and those defects are the decision:
+
+- **W1** — whether a runtime re-invokes a session when a background task exits has to be
+  **verified empirically**; the documentation contradicts itself. And it dies with the session.
+- **W2** — correct and universal, but every message pays a cold start into an **empty** context.
+  There is no accumulated conversation to answer from, and no backpressure because there is
+  nothing to be busy.
+- **W3** — you type text, guess at the submit timing, then scrape raw terminal text to find out
+  what happened. There is no way to tell *finished* from *parked on a permission prompt nobody
+  is watching*, so an injector reports a message as handled while it sits behind a dialog.
+
+### 4.2 What a fixed host buys, unconditionally
+
+`blocked` is the state hand-rolled injection never has, and it is the one that matters. Because
+the host is always present, these are guarantees rather than features that degrade when absent:
+
+| | guaranteed by the host |
+|---|---|
+| **typed states** | `idle` / `working` / `blocked` / `done` / `unknown` — a real backpressure policy instead of a guess (`CROSS-SESSION.md` §4) |
+| **stable addressing** | address an agent **by name**, re-resolved on every delivery — no cached id that later resolves to a stranger's pane |
+| **pane self-detection** | a pane knows its own address, which is the only reason refusing to prompt *ourselves* is possible at all |
+| **supervision** | panes are supervised by something that is not us |
+
+Designs that existed only to work around the absence of those — a hand-rolled injector, a
+pane-scraping completion check, spawn-because-we-cannot-ask — are demoted, not deleted.
+
+### 4.3 The trade, stated once
+
+A mandatory host is **a hard third-party dependency and a single point of failure for
+delivery**: if it is not installed or not running, nothing reaches any agent.
+
+That was accepted deliberately, in exchange for typed states, stable addressing, pane
+self-detection, and not hand-rolling injection — four things that are individually hard to get
+right and whose absence fails *silently*, which is the failure mode this whole document is
+organised against.
+
+Recorded, not re-argued. If it is revisited, revisit it with new measurements.
+
+### 4.4 What becomes of W1 / W2 / W3
+
+They remain in this document and in the codebase as **recorded findings**, not recommended
+paths. Concretely: `go/internal/host/exechost` (W2) is **no longer "the portable floor"**. It is
+a test double and a worked reference for what the `Host` interface demands — and it earns its
+place, because an interface with a single implementation is not an interface. `Host` fitting
+both a workspace manager and a plain spawner is the evidence the seam is in the right place.
+
+**The `Host` interface itself stays and is not dead abstraction.** It is what makes the delivery
+path testable with no host server running anywhere: the self-delivery guard is asserted end to
+end against a *fake host binary* in a temp directory. Remove the interface and those tests go
+with it.
 
 ---
 
@@ -240,12 +294,13 @@ The skill is **operating discipline and product policy**. It contains no transpo
 
 ### 6.1 Discipline (the rules that keep it loop-free)
 
-1. **Never write a polling loop.** Arm one tripwire; be woken.
+1. **Never write a polling loop.** The host hands you the message; be woken.
 2. **A timeout is not an error.** Distinguish "nothing arrived" from "something broke" by
    exit code, and don't treat aging out as failure.
 3. **Never claim to be listening without checking state.** Health-check first.
-4. **The tripwire must BE the thing the runtime watches** — not a detached grandchild whose
-   exit notifies nobody.
+4. **Delivery goes through the host.** Never type into a pane, never scrape one to find out
+   whether you were heard. If the host says `blocked`, a human is needed — say so; do not
+   report the message as handled.
 5. **One consumer.** Never arm a second while one is live.
 6. **Re-arm once per wake**, after answering — not on a timer.
 
@@ -302,6 +357,8 @@ when the model is down.
 | Coalescing window | ✅ | ❌ |
 | Backoff / rate-limit strategy | ✅ | ❌ |
 | Heartbeat + liveness | ✅ | reads it |
+| Agent discovery, state, backpressure | the **host** | ❌ — it asks, it does not implement |
+| Refusing self-delivery / `blocked` targets | the **host** path | ❌ |
 | Who to answer (filters) | ❌ | ✅ |
 | What to say | ❌ | ✅ |
 | Reply routing decision | tool routes | ✅ supplies message id |
@@ -329,8 +386,13 @@ instruction**. Rules:
    toolset, not to a general-purpose agent with everything mounted.
 5. **Audit.** The journal is the record of who asked for what — never let a read destroy it.
 
-The fresh-handler-per-batch design (W2) helps here: a stateless handler with a small toolset
-is far easier to reason about than a long-lived agent accumulating capability and context.
+A fixed host sharpens this rather than softening it. Delivering into a **long-lived** session
+means the message joins a context that already holds someone else's work, and inherits whatever
+tools that session was granted — which is why delivery must be **consent-gated** to sessions
+that opted in, and why "the pane exists" is not consent (`CROSS-SESSION.md` §2.2). A stateless
+handler with a small toolset is still far easier to reason about than a long-lived agent
+accumulating capability and context; the host makes that a deployment choice you have to make
+on purpose.
 
 ---
 
@@ -364,13 +426,19 @@ All of these were observed in practice, not theorized.
 
 ---
 
-## 11. Porting to another channel
+## 11. Porting to another channel — the growth axis
 
-Only the adapter changes. A rough guide:
+The host is fixed, so **the channel is where this product grows.** Only the adapter changes,
+and the practical guide to writing one — with the contract per method, cursor handling,
+self-echo, reply routing, backoff and a checklist — is
+[`go/internal/channel/README.md`](go/internal/channel/README.md). A worked second
+implementation lives in [`go/internal/channel/teams`](go/internal/channel/teams).
+
+A rough guide:
 
 | Channel | Fetch | Push available | Notes |
 |---|---|---|---|
-| Teams / Graph | `delta` + token | change notifications (needs public endpoint) | throttles hard; backoff matters |
+| Teams / Graph | `delta` + token | change notifications (needs public endpoint) | throttles hard; backoff matters. **Measured:** the channel `messages/delta` stream carries top-level messages only — threaded replies need a separate per-thread scan, so a channel cursor is composite |
 | Slack | `conversations.history` + cursor | Events API / Socket Mode | Socket Mode is a genuine push |
 | Telegram | `getUpdates` long-poll | webhook | long-poll is already near-push |
 | WhatsApp (BSP) | webhook only | webhook | usually *must* accept a public callback |
@@ -383,14 +451,18 @@ that is the test of whether this architecture was implemented correctly.
 
 ## 12. Build order
 
+0. **Install the agent host.** It is a prerequisite, not a step you can defer.
 1. Transport adapter + normalization (poll only).
 2. Journal + cursor/ack semantics.
 3. Self-echo suppression.
-4. **W2**: daemon spawns a handler per batch. *You now have a working product.*
+4. Hand off to the host: resolve by name, respect `idle`/`working`/`blocked`, refuse
+   self-delivery. *You now have a working product.*
 5. Heartbeat, single-consumer lock, loud failures.
 6. Coalescing + adaptive backoff.
 7. Filters and the rules-first answering layer.
-8. **W1/W3** as latency optimizations, if the runtime supports them.
+8. The **second channel**. This is the growth axis, and it is the step that proves the
+   envelope and the daemon contract actually hold —
+   [`go/internal/channel/README.md`](go/internal/channel/README.md).
 9. Capability boundary on the handler.
 
-Ship 1–4 before optimizing anything. A correct slow listener beats a fast deaf one.
+Ship 0–4 before optimizing anything. A correct slow listener beats a fast deaf one.
