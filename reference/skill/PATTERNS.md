@@ -310,3 +310,66 @@ Cost, honestly: roughly **6–7 turns per idle hour** at `--max-block 540`, vers
 ~120 for a naive `check; sleep 30` loop and zero for W1/W2. Cheap, not free —
 see the full table in [`POLLING.md`](POLLING.md) §4. Run `node
 examples/poll-demo.js` to watch the whole thing offline.
+
+---
+
+## 8. When NO loop may run at all: one agent session per conversation
+
+*Added alongside [`SESSIONS.md`](SESSIONS.md), which is the full spec. §7 above
+is the other trade — read both before choosing.*
+
+§7's poller still has a loop; it just moved the sleeps into a shell script and
+the hosting into a subagent. When the requirement is **no loop anywhere** — not
+in the main session, not in a subagent — the only wake left is **W2**, the
+daemon spawning a handler per batch. W2's stated weakness is that the handler is
+*fresh*, with no conversational context.
+
+That weakness is a missing lookup table, nothing more:
+
+```
+$AGENT_CONVERSATIONS_HOME/sessions.<tag>.json
+{ "<conversationId>": { "runtime": "claude", "sessionId": "…",
+                        "createdAt": "…", "lastUsedAt": "…", "turns": 12, "cwd": "…" } }
+```
+
+The daemon coalesces a batch, a handler groups it **by conversation**, and
+`session-router.sh` resumes that conversation's agent session for exactly one
+turn:
+
+```bash
+convo listen --adapter ./my-adapter.js --tag support --window 800 \
+             --on-batch './route-batch.sh'      # route-batch.sh is in SESSIONS.md §5
+
+printf '%s' "$text" | reference/skill/session-router.sh \
+    --conversation "$conversationId" --runtime claude --tag support --timeout 240
+# stdout is the reply. 0 answered · 65 bad args · 66 that conversation is busy ·
+# 69 the runtime failed (a dead session id lands here, loudly).
+```
+
+**Rule one — multi-user isolation is not a feature you implement.** It is what a
+separate session id per conversation gives you for free. Two people cannot see
+each other's context because they were never in the same session. Measured: two
+conversations given different codewords, asked to recall them *simultaneously*,
+each returned its own and neither mentioned the other's.
+
+**Rule two — serialise within a conversation, or lose turns silently.** Two
+processes resuming ONE session id is the single-consumer bug
+([`ARCHITECTURE.md`](../../ARCHITECTURE.md) §5.9) one level up. Measured on
+Claude Code 2.1.268: two concurrent `-p --resume` calls on one id both returned
+success, created no second session file, and **branched the transcript** — one
+whole turn stopped existing, with no error anywhere. The per-conversation lock
+is mandatory, and the same reasoning forbids a human opening a router-owned
+session interactively while the daemon may resume it.
+
+**Rule three — bound the pool.** Twenty users messaging at once must not fork
+twenty agents. Different conversations run in parallel; a global semaphore
+(default 4) decides how parallel, and the overflow exits 66 rather than piling
+up invisibly.
+
+Cost, honestly: **zero turns per idle hour** — nothing is alive between
+messages — against ~6–7 for §7's poller. What you give up is interactivity: one
+invocation, one answer, no clarifying question mid-turn. Cold start is real
+(4–6s measured for a Claude resume) and you pay it per message instead of per
+hour. Full spec, the adapter contract, the runtime matrix (Claude / Codex /
+Devin, all three measured) and the captured test output are in
+[`SESSIONS.md`](SESSIONS.md).
