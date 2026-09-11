@@ -41,6 +41,7 @@ empirically**; runtime documentation on this contradicts itself.
 |---|---|
 | `ARCHITECTURE.md` | The full reference architecture — the problem, the split, the wake mechanisms, failure modes, build order |
 | `INTERFACES.md` | The contracts: adapter interface, canonical envelope, daemon/consumer protocol |
+| `OPTIONS-TEMPLATE.md` | How to write up a decision with real options — the method behind the choices in `ARCHITECTURE.md` |
 | `reference/daemon/` | Daemon design notes — journal, cursor vs ack, coalescing, backoff, heartbeat, single-consumer lock |
 | `reference/adapters/` | Per-channel adapter notes (Teams, Slack, Telegram, WhatsApp, IMAP) |
 | `reference/skill/` | The agent-side operating discipline and policy: filters, reply routing, rules-first answering, re-arming |
@@ -96,6 +97,7 @@ its own product surface, not credentials and not an unrestricted shell. See sect
 - Site: https://muthuishere.github.io/agent-conversations/
 - Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Contracts: [`INTERFACES.md`](INTERFACES.md)
+- Writing a decision doc: [`OPTIONS-TEMPLATE.md`](OPTIONS-TEMPLATE.md)
 - Agent-side discipline: [`reference/skill/`](reference/skill/)
 
 ## License
