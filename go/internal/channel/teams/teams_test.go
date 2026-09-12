@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -115,7 +117,6 @@ var (
 	pChanDelta = pChanBase + "/messages/delta"
 	pChanMsgs  = pChanBase + "/messages"
 	pChanReply = pChanBase + "/messages/" + fxRoot + "/replies"
-	pChatDelta = "/v1.0/chats/" + fxChat + "/messages/delta"
 	pChatMsgs  = "/v1.0/chats/" + fxChat + "/messages"
 	emptyDelta = `{"value":[],"@odata.deltaLink":"http://x/v1.0/messages/delta?%24deltatoken=999"}`
 )
@@ -181,6 +182,10 @@ func TestConversations(t *testing.T) {
 		{ID: "channel:" + fxTeam + "/19:00e2a7cf4cb6416fa5bb4f4ba8d9f2f6@thread.tacv2", Kind: "channel", Name: "#Random"},
 		{ID: "chat:" + fxChat, Kind: "chat", Name: "dm:Bob Martin"},
 	}
+	// The fixture also carries a chat with chatType unknownFutureValue — the
+	// shape real Graph lists a chat it then refuses to serve (403 on every
+	// read). It must not be discovered: one undiscoverable room would fail
+	// every poll.
 	if len(got) != len(want) {
 		t.Fatalf("got %d conversations, want %d: %+v", len(got), len(want), got)
 	}
@@ -205,7 +210,7 @@ func TestConversations(t *testing.T) {
 func TestFetchChatSuppressesSelfEcho(t *testing.T) {
 	f := newFakeGraph(t)
 	c := newTestChannel(t, f)
-	f.json(http.MethodGet, pChatDelta, fixture(t, "chat-delta-initial.json"))
+	f.json(http.MethodGet, pChatMsgs, fixture(t, "chat-messages.json"))
 
 	convID := "chat:" + fxChat
 	msgs, next, err := c.Fetch(context.Background(), convID, "")
@@ -240,8 +245,269 @@ func TestFetchChatSuppressesSelfEcho(t *testing.T) {
 	if err != nil {
 		t.Fatalf("cursor did not round-trip: %v", err)
 	}
-	if cs.Delta == "" {
-		t.Errorf("cursor carries no delta token: %+v", cs)
+	// The watermark is the NEWEST message on the page — our own echo — even
+	// though it was not emitted. Position is about what was read, not what
+	// was delivered; otherwise the echo is re-read on every poll forever.
+	if cs.ChatAt != "2026-09-11T19:36:07.130Z" || cs.Delta != "" {
+		t.Errorf("chat cursor = %+v, want watermark at the newest message and no delta token", cs)
+	}
+	// And the wire: the plain listing, newest first, never delta. Real Graph
+	// answers HTTP 400 to `chats/{id}/messages/delta`; the simulator did not,
+	// which is how this reached a live tenant.
+	for _, r := range f.requests() {
+		if strings.HasSuffix(r.Path, "/delta") && strings.Contains(r.Path, "/chats/") {
+			t.Fatalf("chat was fetched through delta: %s", r.Path)
+		}
+		if r.Path == pChatMsgs && r.Query != "%24top=50" {
+			// Exactly $top=50 and nothing else: an explicit $orderby makes
+			// real Graph page four at a time instead of fifty.
+			t.Errorf("chat listing query = %q, want exactly $top=50", r.Query)
+		}
+	}
+}
+
+// chatStore is a fake chat behind the fake Graph: a list the test can append
+// to and edit between polls, served NEWEST FIRST in pages of pageSize with a
+// `$skiptoken` continuation — the shape real Graph pages `chats/{id}/messages`
+// in. It counts requests, because the cost per poll is part of the contract.
+type chatStore struct {
+	mu       sync.Mutex
+	msgs     []graphMessage // oldest first, as they happened
+	pageSize int
+	calls    int
+}
+
+func newChatStore(t *testing.T, f *fakeGraph, pageSize int) *chatStore {
+	t.Helper()
+	cs := &chatStore{pageSize: pageSize}
+	f.on(http.MethodGet, pChatMsgs, cs.serve)
+	return cs
+}
+
+func (cs *chatStore) add(id, at, from, text string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	raw := `{"id":"` + id + `","messageType":"message","createdDateTime":"` + at +
+		`","lastModifiedDateTime":"` + at + `","from":{"user":{"id":"` + from +
+		`","displayName":"alice"}},"body":{"contentType":"text","content":"` + text + `"}}`
+	var m graphMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		panic(err)
+	}
+	cs.msgs = append(cs.msgs, m)
+}
+
+// edit changes the text and bumps lastModifiedDateTime, as Graph does.
+func (cs *chatStore) edit(id, text, modifiedAt string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	for i := range cs.msgs {
+		if cs.msgs[i].ID == id {
+			cs.msgs[i].Body.Content = text
+			var raw map[string]any
+			_ = json.Unmarshal(cs.msgs[i].raw, &raw)
+			raw["body"] = map[string]string{"contentType": "text", "content": text}
+			raw["lastModifiedDateTime"] = modifiedAt
+			cs.msgs[i].raw, _ = json.Marshal(raw)
+		}
+	}
+}
+
+func (cs *chatStore) serve(r *http.Request) (int, string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.calls++
+	skip := 0
+	if tok := r.URL.Query().Get("$skiptoken"); tok != "" {
+		skip, _ = strconv.Atoi(tok)
+	}
+	n := len(cs.msgs)
+	var page []json.RawMessage
+	i := n - 1 - skip
+	for ; i >= 0 && len(page) < cs.pageSize; i-- {
+		page = append(page, cs.msgs[i].raw)
+	}
+	out := map[string]any{"value": page}
+	if i >= 0 {
+		out["@odata.nextLink"] = "http://" + r.Host + pChatMsgs + "?%24top=50&%24skiptoken=" + strconv.Itoa(skip+len(page))
+	}
+	b, _ := json.Marshal(out)
+	return 200, string(b)
+}
+
+func (cs *chatStore) requests() int {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	n := cs.calls
+	cs.calls = 0
+	return n
+}
+
+func ids(msgs []convo.Message) []string {
+	out := make([]string, len(msgs))
+	for i, m := range msgs {
+		out[i] = m.ID
+	}
+	return out
+}
+
+// TestFetchChatWatermark is the chat contract: newest-first on the wire,
+// oldest-first out; a quiet poll costs one request; only what is past the
+// watermark comes back; a message sharing the watermark's millisecond is
+// delivered exactly once; and an edit is not a new message.
+func TestFetchChatWatermark(t *testing.T) {
+	f := newFakeGraph(t)
+	c := newTestChannel(t, f)
+	store := newChatStore(t, f, 3)
+	convID := "chat:" + fxChat
+
+	store.add("m1", "2026-09-12T10:00:00.1Z", fxBobID, "one")
+	store.add("m2", "2026-09-12T10:00:01Z", fxBobID, "two")
+	store.add("m3", "2026-09-12T10:00:02.500Z", fxBobID, "three")
+
+	// First attach with no cursor: the newest page, oldest first.
+	msgs, cur, err := c.Fetch(context.Background(), convID, "")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := ids(msgs); strings.Join(got, ",") != "m1,m2,m3" {
+		t.Fatalf("first fetch = %v, want m1,m2,m3 oldest first", got)
+	}
+	store.requests()
+
+	// Quiet chat: nothing new, and it cost ONE request — the first page
+	// already holds the watermark, so no further page is read.
+	msgs, cur, err = c.Fetch(context.Background(), convID, cur)
+	if err != nil {
+		t.Fatalf("quiet Fetch: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("quiet poll returned %v, want nothing", ids(msgs))
+	}
+	if n := store.requests(); n != 1 {
+		t.Fatalf("quiet poll cost %d requests, want 1", n)
+	}
+
+	// A sibling in the SAME millisecond as the watermark, with a different id:
+	// delivered once, then never again.
+	store.add("m3b", "2026-09-12T10:00:02.5Z", fxBobID, "three-b")
+	msgs, cur, err = c.Fetch(context.Background(), convID, cur)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := ids(msgs); strings.Join(got, ",") != "m3b" {
+		t.Fatalf("same-millisecond sibling: got %v, want m3b", got)
+	}
+	msgs, cur, _ = c.Fetch(context.Background(), convID, cur)
+	if len(msgs) != 0 {
+		t.Fatalf("same-millisecond sibling redelivered: %v", ids(msgs))
+	}
+	store.requests()
+
+	// Seven new messages across three pages: all seven, oldest first, and the
+	// walk stops on the page that crosses the watermark — never the whole
+	// history.
+	for i := 4; i <= 10; i++ {
+		store.add(fmt.Sprintf("m%d", i), fmt.Sprintf("2026-09-12T10:00:%02d.000Z", i), fxBobID, "n")
+	}
+	msgs, cur, err = c.Fetch(context.Background(), convID, cur)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := ids(msgs); strings.Join(got, ",") != "m4,m5,m6,m7,m8,m9,m10" {
+		t.Fatalf("burst = %v, want m4..m10 oldest first", got)
+	}
+	if n := store.requests(); n != 3 {
+		t.Fatalf("burst of 7 over pages of 3 cost %d requests, want 3 (stop on crossing the watermark)", n)
+	}
+
+	// An edit bumps lastModifiedDateTime. It is not a new message and is not
+	// redelivered — by decision, see fetchChat.
+	store.edit("m2", "two, edited", "2026-09-12T10:01:00Z")
+	msgs, cur, err = c.Fetch(context.Background(), convID, cur)
+	if err != nil {
+		t.Fatalf("Fetch after edit: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("an edited message was redelivered: %v", ids(msgs))
+	}
+
+	// Timestamps are compared by value, not as strings. "…10.9Z" is a shorter
+	// string than the watermark "…10.000Z" and would sort BELOW it bytewise.
+	store.add("m11", "2026-09-12T10:00:10.9Z", fxBobID, "late")
+	msgs, cur, err = c.Fetch(context.Background(), convID, cur)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := ids(msgs); strings.Join(got, ",") != "m11" {
+		t.Fatalf("variable-precision timestamp: got %v, want m11", got)
+	}
+	cs, err := parseCursor(cur)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cs.ChatAt != "2026-09-12T10:00:10.9Z" || len(cs.ChatIDs) != 1 || cs.ChatIDs[0] != "m11" {
+		t.Fatalf("cursor = %+v, want watermark at m11", cs)
+	}
+}
+
+// TestFetchChatPrimeStartsFromNow: priming a chat reads one page, emits
+// nothing, and the next poll sees only what landed afterwards.
+func TestFetchChatPrimeStartsFromNow(t *testing.T) {
+	f := newFakeGraph(t)
+	c := newTestChannel(t, f)
+	store := newChatStore(t, f, 2)
+	convID := "chat:" + fxChat
+	for i := 1; i <= 5; i++ {
+		store.add(fmt.Sprintf("old%d", i), fmt.Sprintf("2026-09-12T09:00:%02dZ", i), fxBobID, "history")
+	}
+
+	cur, err := c.PrimeCursor(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("PrimeCursor: %v", err)
+	}
+	if n := store.requests(); n != 1 {
+		t.Fatalf("priming a chat cost %d requests, want 1 — history must not be walked", n)
+	}
+	msgs, cur, err := c.Fetch(context.Background(), convID, cur)
+	if err != nil {
+		t.Fatalf("Fetch after prime: %v", err)
+	}
+	if len(msgs) != 0 {
+		t.Fatalf("history replayed after priming: %v", ids(msgs))
+	}
+	store.add("new1", "2026-09-12T09:01:00Z", fxBobID, "hello?")
+	msgs, _, err = c.Fetch(context.Background(), convID, cur)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if got := ids(msgs); strings.Join(got, ",") != "new1" {
+		t.Fatalf("after prime got %v, want new1 only", got)
+	}
+}
+
+// TestFetchChatIgnoresDeltaEraCursor: a cursor written by the build that used
+// delta for chats carries a token Graph never honoured. It is not an error and
+// it is not a position; the chat starts from the newest page, and the token
+// does not survive.
+func TestFetchChatIgnoresDeltaEraCursor(t *testing.T) {
+	f := newFakeGraph(t)
+	c := newTestChannel(t, f)
+	store := newChatStore(t, f, 10)
+	store.add("m1", "2026-09-12T10:00:00Z", fxBobID, "hi")
+
+	old := newCursor()
+	old.Delta = "8"
+	msgs, cur, err := c.Fetch(context.Background(), "chat:"+fxChat, mustEncode(t, old))
+	if err != nil {
+		t.Fatalf("Fetch with a delta-era cursor: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("got %v, want the newest page", ids(msgs))
+	}
+	cs, _ := parseCursor(cur)
+	if cs.Delta != "" || cs.ChatAt == "" {
+		t.Fatalf("cursor = %+v, want the delta token dropped and a watermark set", cs)
 	}
 }
 
@@ -510,26 +776,26 @@ func TestThrottleIsRetried(t *testing.T) {
 	f := newFakeGraph(t)
 	c := newTestChannel(t, f)
 	var calls int
-	f.on(http.MethodGet, pChatDelta, func(*http.Request) (int, string) {
+	f.on(http.MethodGet, pChatMsgs, func(*http.Request) (int, string) {
 		calls++
 		if calls == 1 {
 			return http.StatusTooManyRequests, `{"error":{"code":"throttled","message":"slow down"}}`
 		}
-		return 200, emptyDelta
+		return 200, `{"value":[]}`
 	})
 
 	if _, _, err := c.Fetch(context.Background(), "chat:"+fxChat, ""); err != nil {
 		t.Fatalf("Fetch after a 429: %v", err)
 	}
 	if calls != 2 {
-		t.Fatalf("delta called %d times, want 2 (one throttled, one retried)", calls)
+		t.Fatalf("listing called %d times, want 2 (one throttled, one retried)", calls)
 	}
 }
 
 func TestNotFoundIsTyped(t *testing.T) {
 	f := newFakeGraph(t)
 	c := newTestChannel(t, f)
-	f.on(http.MethodGet, pChatDelta, func(*http.Request) (int, string) {
+	f.on(http.MethodGet, pChatMsgs, func(*http.Request) (int, string) {
 		return http.StatusNotFound, `{"error":{"code":"itemNotFound","message":"Chat not found"}}`
 	})
 	_, _, err := c.Fetch(context.Background(), "chat:"+fxChat, "")
@@ -544,14 +810,14 @@ func TestNotFoundIsTyped(t *testing.T) {
 func TestPrimeCursorEmitsNothing(t *testing.T) {
 	f := newFakeGraph(t)
 	c := newTestChannel(t, f)
-	f.json(http.MethodGet, pChatDelta, fixture(t, "chat-delta-initial.json"))
+	f.json(http.MethodGet, pChatMsgs, fixture(t, "chat-messages.json"))
 
 	cur, err := c.PrimeCursor(context.Background(), "chat:"+fxChat)
 	if err != nil {
 		t.Fatalf("PrimeCursor: %v", err)
 	}
 	cs, err := parseCursor(cur)
-	if err != nil || cs.Delta == "" {
+	if err != nil || cs.ChatAt == "" {
 		t.Fatalf("primed cursor is not usable: %+v %v", cs, err)
 	}
 }
@@ -560,6 +826,7 @@ func TestCursorRoundTrip(t *testing.T) {
 	in := newCursor()
 	in.Delta = "102"
 	in.Threads = map[string]string{"root-1": "2026-09-11T19:36:07.098Z"}
+	in.ChatAt, in.ChatIDs = "2026-09-11T19:36:07.130Z", []string{"chat-msg-1"}
 	enc := mustEncode(t, in)
 	if strings.Contains(enc, "root-1") {
 		t.Error("the cursor is readable — nothing above the seam should be tempted to parse it")
@@ -568,7 +835,8 @@ func TestCursorRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseCursor: %v", err)
 	}
-	if out.Delta != in.Delta || out.Threads["root-1"] != in.Threads["root-1"] {
+	if out.Delta != in.Delta || out.Threads["root-1"] != in.Threads["root-1"] ||
+		out.ChatAt != in.ChatAt || len(out.ChatIDs) != 1 || out.ChatIDs[0] != "chat-msg-1" {
 		t.Fatalf("round trip lost data: %+v", out)
 	}
 	// Pruning keeps the cursor a constant size on a long-lived listener.

@@ -115,4 +115,38 @@ func TestLiveAPLTeamsChannel(t *testing.T) {
 		}
 	}
 	t.Logf("fetched %d new message(s) after priming", len(msgs))
+
+	// The same, for a CHAT. This is the half the simulator could not test:
+	// real Graph has no delta for chat messages, and the first live run
+	// against this tenant failed every chat while every channel passed.
+	var chat string
+	for _, c := range convs {
+		if c.Kind == kindChat {
+			chat = c.ID
+			break
+		}
+	}
+	if chat == "" {
+		t.Skip("handle is in no chats; nothing to prime")
+	}
+	ccur, err := ch.PrimeCursor(ctx, chat)
+	if err != nil {
+		t.Fatalf("PrimeCursor on a chat through apl: %v", err)
+	}
+	cmsgs, cnext, err := ch.Fetch(ctx, chat, ccur)
+	if err != nil {
+		t.Fatalf("Fetch on a chat through apl: %v", err)
+	}
+	if cnext == "" {
+		t.Fatal("chat Fetch returned an empty cursor — position was lost")
+	}
+	for _, m := range cmsgs {
+		if m.From.ID == self.ID {
+			t.Fatal("our own chat message survived self-echo suppression")
+		}
+		if m.Source.Kind != kindChat || m.Source.ThreadID != "" {
+			t.Fatalf("a chat message arrived as kind %q thread %q", m.Source.Kind, m.Source.ThreadID)
+		}
+	}
+	t.Logf("chat: fetched %d new message(s) after priming", len(cmsgs))
 }

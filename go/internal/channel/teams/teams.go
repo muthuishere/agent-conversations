@@ -11,9 +11,12 @@
 //
 // It was developed and measured against a Graph-shaped simulator on localhost.
 // Porting to a live tenant is a base URL and a bearer token: every path,
-// payload and paging rule below is Graph v1.0 as documented, and the two places
-// where the simulator is NOT Graph are called out where they occur (the
-// `x-user-name` identity header, and `/mock/*`, which this package never uses).
+// payload and paging rule below is Graph v1.0 as documented, and the three
+// places where the simulator is NOT Graph are called out where they occur: the
+// `x-user-name` identity header; `/mock/*`, which this package never uses; and
+// `chats/{id}/messages/delta`, which the simulator serves and real Graph
+// refuses with HTTP 400 — the one that got through to a live tenant. Chats are
+// read from the plain listing with a watermark instead (fetchChat).
 //
 // What this package does NOT do, because the layers above already do it
 // (ARCHITECTURE.md §7): journal, coalesce, filter, back off between polls,
@@ -23,6 +26,7 @@ package teams
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -206,6 +210,18 @@ func (c *Channel) Conversations(ctx context.Context) ([]convo.Conversation, erro
 		return nil, err
 	}
 	for _, ch := range chats {
+		if ch.ChatType == chatTypeUnknown {
+			// Graph's own sentinel for a chat this API version cannot
+			// represent. Measured live: `/me/chats` listed one with no
+			// members, no tenant, no webUrl and epoch timestamps, and both
+			// its `/messages` and `/members` answered 403 on every attempt
+			// while every other chat read fine. It is not a room anyone can
+			// be heard in through this API, so it is not a conversation;
+			// discovering it would fail one of 38 fetches on every poll for
+			// as long as the tenant keeps it. Dropped HERE, on the value
+			// Graph itself flags it with — never by swallowing the 403.
+			continue
+		}
 		out = append(out, convo.Conversation{
 			ID:   chatConvID(ch.ID),
 			Kind: kindChat,
@@ -214,6 +230,10 @@ func (c *Channel) Conversations(ctx context.Context) ([]convo.Conversation, erro
 	}
 	return out, nil
 }
+
+// chatTypeUnknown is the `chatType` Graph reports for a chat it cannot
+// describe in v1.0. See Conversations.
+const chatTypeUnknown = "unknownFutureValue"
 
 // chatName is display text, never an identifier. A 1:1 chat has no topic, so
 // the useful name is the other person.
@@ -274,8 +294,8 @@ func (c *Channel) Identity(ctx context.Context) (convo.Identity, error) {
 // Fetch returns everything new in one conversation since an opaque cursor.
 //
 // Messages come back OLDEST FIRST, whatever order the API used — Graph returns
-// channel listings newest-first, and a journal appended in that order replays a
-// conversation backwards.
+// both channel and chat listings newest-first, and a journal appended in that
+// order replays a conversation backwards.
 func (c *Channel) Fetch(ctx context.Context, convID, cur string) ([]convo.Message, string, error) {
 	ref, err := parseConvID(convID)
 	if err != nil {
@@ -293,7 +313,7 @@ func (c *Channel) Fetch(ctx context.Context, convID, cur string) ([]convo.Messag
 	var msgs []graphMessage
 	switch ref.kind {
 	case kindChat:
-		msgs, cs, err = c.fetchChat(ctx, ref, cs)
+		msgs, cs, err = c.fetchChat(ctx, ref, cs, chatPageSize)
 	case kindChannel:
 		msgs, cs, err = c.fetchChannel(ctx, ref, cs)
 	}
@@ -321,7 +341,7 @@ func (c *Channel) Fetch(ctx context.Context, convID, cur string) ([]convo.Messag
 		}
 		out = append(out, c.toEnvelope(m, ref, convID, self))
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].At < out[j].At })
+	sort.SliceStable(out, func(i, j int) bool { return cmpTime(out[i].At, out[j].At) < 0 })
 
 	next, err := cs.encode()
 	if err != nil {
@@ -330,18 +350,141 @@ func (c *Channel) Fetch(ctx context.Context, convID, cur string) ([]convo.Messag
 	return out, next, nil
 }
 
-// fetchChat is the simple half: chats are flat, so one delta token is the whole
-// position.
-func (c *Channel) fetchChat(ctx context.Context, ref convRef, cs cursor) ([]graphMessage, cursor, error) {
-	base := fmt.Sprintf("%s/chats/%s/messages/delta", c.cfg.BaseURL, escSeg(ref.chatID))
-	msgs, token, err := c.delta(ctx, base, cs.Delta)
-	if err != nil {
-		return nil, cs, err
+// chatPageSize is `$top` for a chat listing: 50 is the most this endpoint
+// allows. It is a hint, not a promise — live, a `$top=50` request has come
+// back with four messages and a nextLink — so nothing below infers "done" from
+// a short page. Only passing the watermark, or the absence of a nextLink, ends
+// a walk.
+const chatPageSize = 50
+
+// fetchChat reads a chat from the plain listing, newest first, and walks back
+// only until it passes the watermark in the cursor.
+//
+// This used to be `…/chats/{id}/messages/delta`, and it worked on the
+// simulator. Real Graph has never supported delta on chat messages — HTTP 400,
+// "Change tracking is not supported against 'microsoft.graph.chatMessage'" —
+// so on a live tenant every one of 29 chats failed while every channel
+// succeeded. Delta stays for channels; this path is the one Graph offers.
+//
+// The position is a createdDateTime watermark plus the ids that share it, and
+// keying on createdDateTime rather than lastModifiedDateTime is deliberate.
+// The listing is ordered by createdDateTime, so that is the only field a walk
+// can safely stop on. lastModifiedDateTime also moves on an edit AND on a
+// reaction — a thumbs-up would re-fetch a message on every poll — and the
+// layer above dedupes by id (cli/fetch.go), so a re-emitted edit would be
+// dropped there anyway for as long as the id is remembered, then delivered
+// once it is forgotten: a feature that works sometimes is worse than none.
+// Consequently an EDITED MESSAGE IS NOT REDELIVERED. The channel reply scan
+// already keys on createdDateTime, so both paths agree.
+// Graph's `$filter` cannot help either way: it allows only lastModifiedDateTime,
+// and combined with this ordering it was silently ignored (measured live: a
+// future timestamp still returned messages), so no filter is sent.
+//
+// Cost per poll, stated plainly: ONE request for a quiet chat — the first page
+// already holds a message at or below the watermark. With N new messages it
+// is however many pages hold them, and the walk never goes past the first
+// message older than the watermark. A chat with NO watermark yet is bounded to
+// `backfill` messages rather than its whole history, so a cursorless first
+// fetch costs roughly one page and never a chat's lifetime of traffic.
+//
+// Graph timestamps are compared by parsing, never as strings: the same tenant
+// emits both `…07.12Z` and `…07.124Z`, and as strings those sort backwards.
+func (c *Channel) fetchChat(ctx context.Context, ref convRef, cs cursor, backfill int) ([]graphMessage, cursor, error) {
+	// A cursor written by the delta-era build may still carry a chat delta
+	// token. It never meant anything to Graph, so it is dropped and the chat
+	// is treated as not yet positioned.
+	cs.Delta = ""
+
+	primed := cs.ChatAt != ""
+	atIDs := make(map[string]struct{}, len(cs.ChatIDs))
+	for _, id := range cs.ChatIDs {
+		atIDs[id] = struct{}{}
 	}
-	if token != "" {
-		cs.Delta = token
+	newestAt, newestIDs := cs.ChatAt, append([]string(nil), cs.ChatIDs...)
+
+	var out []graphMessage
+	// No `$orderby`. The listing is newest-first by createdDateTime by
+	// default (measured over full pages, and across a nextLink), and asking
+	// for that order explicitly makes Graph serve FOUR messages per page
+	// instead of fifty — a twelvefold cost for the same result.
+	next := fmt.Sprintf("%s/chats/%s/messages?%%24top=%d", c.cfg.BaseURL, escSeg(ref.chatID), chatPageSize)
+	collected := 0
+	for hop := 0; next != "" && hop < maxPageHops; hop++ {
+		var page collection[graphMessage]
+		if err := c.do(ctx, "GET", next, nil, &page); err != nil {
+			// Same tolerance as getCollection: a continuation Graph itself
+			// handed out and then refuses is terminal, not fatal.
+			var hse *httpStatusError
+			if hop > 0 && errors.As(err, &hse) && hse.status == 400 {
+				break
+			}
+			return nil, cs, err
+		}
+		passed := false
+		for _, m := range page.Value {
+			if m.ID == "" {
+				continue
+			}
+			collected++
+			// The watermark only ever moves forward.
+			switch cmpTime(m.CreatedDateTime, newestAt) {
+			case 1:
+				newestAt, newestIDs = m.CreatedDateTime, []string{m.ID}
+			case 0:
+				if !containsString(newestIDs, m.ID) {
+					newestIDs = append(newestIDs, m.ID)
+				}
+			}
+			if primed {
+				switch cmpTime(m.CreatedDateTime, cs.ChatAt) {
+				case -1:
+					// Older than the watermark. Everything on later pages is
+					// older still, so this page is the last one — but the
+					// rest of THIS page is still checked, so a page that is
+					// not perfectly ordered cannot hide a message.
+					passed = true
+					continue
+				case 0:
+					if _, seen := atIDs[m.ID]; seen {
+						// At the watermark and already emitted: the
+						// position is reached just as surely as by an
+						// older message, so this page is the last.
+						passed = true
+						continue
+					}
+				}
+			}
+			out = append(out, m)
+		}
+		if passed || (!primed && collected >= backfill) {
+			break
+		}
+		next = page.NextLink
 	}
-	return msgs, cs, nil
+	cs.ChatAt, cs.ChatIDs = newestAt, newestIDs
+	return out, cs, nil
+}
+
+// cmpTime orders two Graph timestamps: -1, 0 or 1. They are parsed, not
+// compared as strings — see fetchChat. A value that does not parse falls back
+// to a string compare rather than failing the fetch, because an unparseable
+// timestamp is a message to log, not a reason to go deaf.
+func cmpTime(a, b string) int {
+	ta, errA := time.Parse(time.RFC3339Nano, a)
+	tb, errB := time.Parse(time.RFC3339Nano, b)
+	if errA != nil || errB != nil {
+		return strings.Compare(a, b)
+	}
+	return ta.Compare(tb)
+}
+
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchChannel is the interesting half, and the finding worth writing down.
@@ -396,10 +539,10 @@ func (c *Channel) fetchChannel(ctx context.Context, ref convRef, cs cursor) ([]g
 		}
 		newest := watermark
 		for _, r := range replies {
-			if r.CreatedDateTime > newest {
+			if cmpTime(r.CreatedDateTime, newest) > 0 {
 				newest = r.CreatedDateTime
 			}
-			if tracked && r.CreatedDateTime <= watermark {
+			if tracked && cmpTime(r.CreatedDateTime, watermark) <= 0 {
 				continue
 			}
 			// An untracked thread emits every reply it has: they are all new
@@ -460,7 +603,9 @@ func (c *Channel) PrimeCursor(ctx context.Context, convID string) (string, error
 	cs := newCursor()
 	switch ref.kind {
 	case kindChat:
-		_, cs, err = c.fetchChat(ctx, ref, cs)
+		// One page is enough to learn where "now" is, and one page is one
+		// request. Priming 29 chats must not cost 29 chat histories.
+		_, cs, err = c.fetchChat(ctx, ref, cs, 1)
 	case kindChannel:
 		_, cs, err = c.fetchChannel(ctx, ref, cs)
 	}

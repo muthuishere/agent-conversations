@@ -89,6 +89,14 @@ Three rules that survive every platform:
    because `…/messages/delta` does not carry threaded replies and `…/replies/delta` does not
    exist (measured: 404). Both go into one base64 JSON string, and the interface did not have
    to change. Version it, and refuse a cursor whose version you do not recognise.
+   A Teams *chat* has no delta at all — measured on a live tenant, HTTP 400 "Change tracking
+   is not supported against 'microsoft.graph.chatMessage'", while the simulator happily served
+   the endpoint — so a chat's position is a `createdDateTime` watermark plus the ids sharing
+   that timestamp, and the adapter reads the plain newest-first listing back only until it
+   passes the watermark: one request per quiet chat per poll. It keys on `createdDateTime`,
+   not `lastModifiedDateTime` (which a reaction also bumps), so an edited message is not
+   redelivered. **Test the simulator's endpoints against the real API's documentation** — a
+   mock that is more generous than the platform hides exactly this class of bug.
 3. **Bound anything that grows.** A per-thread watermark map must be pruned to the threads you
    still scan, or a long-lived listener's cursor grows forever.
 

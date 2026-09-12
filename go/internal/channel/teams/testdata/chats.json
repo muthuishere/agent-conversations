@@ -1,6 +1,6 @@
 {
     "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#chats",
-    "@odata.count": 1,
+    "@odata.count": 2,
     "value": [
         {
             "id": "a0a6b1ec-cb4c-4a6f-80e1-e6edc07246e8",
@@ -27,6 +27,16 @@
                     "email": "bob.martin@mockteams.local"
                 }
             ]
+        },
+        {
+            "id": "19:meeting_Z2hvc3QtY2hhdC1zeW50aGV0aWM=@thread.v2",
+            "topic": null,
+            "chatType": "unknownFutureValue",
+            "createdDateTime": "0001-01-01T00:00:00Z",
+            "lastUpdatedDateTime": "0001-01-01T00:00:00Z",
+            "tenantId": null,
+            "webUrl": null,
+            "members": []
         }
     ]
 }

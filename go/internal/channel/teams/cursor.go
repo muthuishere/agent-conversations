@@ -10,22 +10,30 @@ import (
 // cursor is what this channel hides behind convo.Channel's OPAQUE cursor
 // string, and it is the single most interesting thing about this adapter.
 //
-// Teams does not have one position per conversation. It has two, because a
-// channel is two levels deep:
+// Teams does not have one position per conversation. It has three shapes of
+// position, because the two kinds of conversation page differently:
 //
-//   - `…/messages/delta` + `$deltatoken` — new TOP-LEVEL messages. Measured
-//     against the Graph-shaped mock: a threaded reply does NOT appear in this
-//     stream, and `…/messages/{id}/replies/delta` does not exist (404). So a
-//     listener that only follows the delta token is deaf to every reply —
-//     including replies to its own posts, which is where its conversations
-//     actually happen.
+//   - `…/channels/{id}/messages/delta` + `$deltatoken` — new TOP-LEVEL channel
+//     messages. Measured against the Graph-shaped mock: a threaded reply does
+//     NOT appear in this stream, and `…/messages/{id}/replies/delta` does not
+//     exist (404). So a listener that only follows the delta token is deaf to
+//     every reply — including replies to its own posts, which is where its
+//     conversations actually happen.
 //   - a per-thread watermark — the newest reply timestamp we have already
 //     emitted for each root message we are scanning.
+//   - a per-chat watermark — because CHATS HAVE NO DELTA AT ALL. Measured on a
+//     live tenant, not on the simulator: `…/chats/{id}/messages/delta` answers
+//     HTTP 400 "Change tracking is not supported against
+//     'microsoft.graph.chatMessage'". The simulator implemented that endpoint,
+//     so every chat worked locally and every chat failed in production. A chat
+//     is read newest-first from the plain listing and walked back until the
+//     watermark is passed (fetchChat).
 //
 // convo.Channel gives us exactly one string per conversation to carry that in,
 // and that turned out to be enough: the cursor is opaque by contract, so a
 // composite one is legal and nothing above the seam notices. The interface did
-// not have to change. What it costs is stated plainly in fetchChannel.
+// not have to change. What it costs is stated plainly in fetchChannel and
+// fetchChat.
 type cursor struct {
 	V int `json:"v"`
 	// Delta is the `$deltatoken` value for the top-level stream.
@@ -34,6 +42,13 @@ type cursor struct {
 	// emitted for it. Bounded by the reply-scan window, so it cannot grow
 	// without limit.
 	Threads map[string]string `json:"t,omitempty"`
+	// ChatAt is the newest createdDateTime already emitted for a chat, kept as
+	// the exact string Graph sent. ChatIDs are the message ids that share that
+	// timestamp, so a second message landing in the same millisecond is
+	// neither skipped nor re-emitted forever; the set is as small as one
+	// millisecond of a chat. Both are meaningless for a channel.
+	ChatAt  string   `json:"ca,omitempty"`
+	ChatIDs []string `json:"ci,omitempty"`
 }
 
 func newCursor() cursor {
