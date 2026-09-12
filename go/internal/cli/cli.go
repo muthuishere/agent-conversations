@@ -62,10 +62,12 @@ type options struct {
 
 	// teams channel configuration. Nothing above the channel seam reads these;
 	// they exist here only because a CLI is where a human supplies them.
-	teamsBaseURL  string
-	teamsUser     string
-	teamsTokenEnv string
-	teamsScan     int
+	teamsBaseURL   string
+	teamsUser      string
+	teamsTokenEnv  string
+	teamsAplHandle string
+	teamsAplScopes string
+	teamsScan      int
 
 	// ingest (fetch / listen)
 	in         string
@@ -102,9 +104,19 @@ Global flags:
   --json              machine-readable output
 
 Teams channel flags (or the matching $CONVO_TEAMS_* env var):
+  --teams-apl-handle <h> RECOMMENDED. An identity from "apl accounts", e.g.
+                         ms:<label>. Graph is then reached through apl and this
+                         process never sees a credential. Implies a base URL of
+                         https://graph.microsoft.com/v1.0 and IGNORES
+                         --teams-token-env. $CONVO_TEAMS_APL_HANDLE
+  --teams-apl-scope <s>  comma-separated scopes apl must already hold, checked
+                         locally before any request leaves. Off by default: apl's
+                         record of a grant can understate the token, and refusing
+                         a call the tenant would serve is the worse failure.
+                         $CONVO_TEAMS_APL_SCOPES
   --teams-base-url <u>   Graph root, no trailing slash. $CONVO_TEAMS_BASE_URL
   --teams-token-env <V>  NAME of the env var holding the bearer token — never the
-                         token itself. $CONVO_TEAMS_TOKEN_ENV
+                         token itself. For a simulator. $CONVO_TEAMS_TOKEN_ENV
   --teams-user <name>    x-user-name, for a Graph-shaped simulator only.
                          $CONVO_TEAMS_USER
   --teams-scan-depth <n> threads per channel scanned for replies (default 10)
@@ -180,6 +192,8 @@ func (a *App) run(ctx context.Context, argv []string) error {
 	fs.StringVar(&o.teamsBaseURL, "teams-base-url", a.env("CONVO_TEAMS_BASE_URL", ""), "")
 	fs.StringVar(&o.teamsUser, "teams-user", a.env("CONVO_TEAMS_USER", ""), "")
 	fs.StringVar(&o.teamsTokenEnv, "teams-token-env", a.env("CONVO_TEAMS_TOKEN_ENV", ""), "")
+	fs.StringVar(&o.teamsAplHandle, "teams-apl-handle", a.env("CONVO_TEAMS_APL_HANDLE", ""), "")
+	fs.StringVar(&o.teamsAplScopes, "teams-apl-scope", a.env("CONVO_TEAMS_APL_SCOPES", ""), "")
 	fs.IntVar(&o.teamsScan, "teams-scan-depth", envInt(a.env("CONVO_TEAMS_SCAN_DEPTH", "0")), "")
 	fs.StringVar(&o.in, "in", "", "")
 	fs.BoolVar(&o.prime, "prime", false, "")
@@ -417,10 +431,33 @@ func (a *App) channel(o options) (convo.Channel, error) {
 // this one takes `--teams-token-env AUTH_VAR` and reads the value itself. The
 // value is never printed, and no error message below ever contains it.
 func (a *App) teamsChannel(o options) (convo.Channel, error) {
+	// Mode 1: apl. The broker holds the OAuth grant and refreshes it, so no
+	// token exists in a flag, an env var, this process's memory, `ps` output or
+	// the shell history. A handle is a LABEL — safe everywhere a token is not.
+	if h := strings.TrimSpace(o.teamsAplHandle); h != "" {
+		cfg := teamschan.Config{
+			BaseURL:        o.teamsBaseURL, // empty -> real Graph
+			ReplyScanDepth: o.teamsScan,
+		}
+		// Said out loud rather than silently preferred: two credentials
+		// configured at once is a misunderstanding, and the safe reading is
+		// always "use the one that does not put a secret in this process".
+		if o.teamsTokenEnv != "" && a.Stderr != nil {
+			fmt.Fprintf(a.Stderr,
+				"convo: --teams-apl-handle %s is set, so --teams-token-env %s is ignored\n",
+				h, o.teamsTokenEnv)
+		}
+		return teamschan.NewViaAPL(cfg, h, splitList(o.teamsAplScopes)...)
+	}
+
+	// Mode 2: a bearer token, by the NAME of an env var. Kept for a
+	// Graph-shaped simulator, which has no apl identity to speak of.
 	if strings.TrimSpace(o.teamsBaseURL) == "" {
 		return nil, convo.Wrap(convo.ErrNotConfigured,
-			"--channel teams needs --teams-base-url (or $CONVO_TEAMS_BASE_URL), "+
-				"e.g. https://graph.microsoft.com/v1.0")
+			"--channel teams needs --teams-apl-handle (recommended: an identity "+
+				"from `apl accounts`, and no credential ever reaches this process) "+
+				"or --teams-base-url (or $CONVO_TEAMS_BASE_URL), "+
+				"e.g. http://127.0.0.1:4000/v1.0 for a simulator")
 	}
 	cfg := teamschan.Config{
 		BaseURL:        o.teamsBaseURL,
@@ -456,4 +493,16 @@ func (a *App) print(o options, human string, v any) error {
 	}
 	fmt.Fprintln(a.Stdout, human)
 	return nil
+}
+
+// splitList turns a comma-separated flag into a slice, dropping blanks so a
+// trailing comma is not a scope named "".
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

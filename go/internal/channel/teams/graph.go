@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/muthuishere/agent-conversations/go/internal/convo"
+	apltransport "github.com/muthuishere/agent-conversations/go/internal/transport/apl"
 )
 
 // ---------------------------------------------------------------------------
@@ -203,6 +205,15 @@ func (c *Channel) do(ctx context.Context, method, rawURL string, body any, out a
 
 		resp, err := c.client().Do(req)
 		if err != nil {
+			// An identity the transport cannot satisfy is not a transient
+			// failure. Retrying it four times turns one actionable message
+			// ("run this login command") into four, delays it by four seconds,
+			// and reports it as an unreachable host — which sends the reader
+			// looking at the network instead of at their own grant.
+			var ae *apltransport.AuthError
+			if errors.As(err, &ae) {
+				return convo.Wrap(convo.ErrNotConfigured, "%s %s: %v", method, redact(rawURL), err)
+			}
 			lastErr = convo.Wrap(convo.ErrHostUnavailable, "%s %s: %v", method, redact(rawURL), err)
 			continue
 		}
@@ -297,7 +308,7 @@ func redact(raw string) string {
 	return u.String()
 }
 
-func (c *Channel) client() *http.Client {
+func (c *Channel) client() Doer {
 	if c.cfg.HTTPClient != nil {
 		return c.cfg.HTTPClient
 	}

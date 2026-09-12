@@ -25,7 +25,6 @@ import (
 	"context"
 	"fmt"
 	"html"
-	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -53,9 +52,10 @@ type Config struct {
 	UserName string
 
 	// HTTPClient is injectable so a test can point the adapter at an
-	// httptest server serving recorded fixtures. Defaults to
-	// http.DefaultClient.
-	HTTPClient *http.Client
+	// httptest server serving recorded fixtures, and so a transport that is
+	// not net/http at all can be substituted. Defaults to http.DefaultClient.
+	// See NewViaAPL in apl.go for the second implementation.
+	HTTPClient Doer
 
 	// ReplyScanDepth is how many of the newest top-level messages per channel
 	// are scanned for new threaded replies on each Fetch. Default 10.

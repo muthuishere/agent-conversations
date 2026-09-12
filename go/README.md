@@ -123,29 +123,78 @@ double, not a supported deployment) · `--exec-cmd '<cmd>'` · `--channel <name>
 Ingest flags (`fetch`, `listen`): `--in <needle>` · `--prime` · `--once` ·
 `--poll-active/-mid/-idle` · `--idle-1` · `--idle-2`.
 
-Teams flags: `--teams-base-url <url>` · `--teams-token-env <VAR>` ·
-`--teams-user <name>` · `--teams-scan-depth <n>`.
+Teams flags: `--teams-apl-handle <handle>` · `--teams-apl-scope <a,b>` ·
+`--teams-base-url <url>` · `--teams-token-env <VAR>` · `--teams-user <name>` ·
+`--teams-scan-depth <n>`.
 
 Environment: `CONVO_HOST`, `CONVO_EXEC_CMD`, `CONVO_CHANNEL`, `CONVO_TAG`,
-`AGENT_CONVERSATIONS_HOME`, `CONVO_TEAMS_BASE_URL`, `CONVO_TEAMS_TOKEN_ENV`,
-`CONVO_TEAMS_USER`, `CONVO_TEAMS_SCAN_DEPTH`.
+`AGENT_CONVERSATIONS_HOME`, `CONVO_TEAMS_APL_HANDLE`, `CONVO_TEAMS_APL_SCOPES`,
+`CONVO_TEAMS_BASE_URL`, `CONVO_TEAMS_TOKEN_ENV`, `CONVO_TEAMS_USER`,
+`CONVO_TEAMS_SCAN_DEPTH`.
 
 `--channel` has **no default**. Two are built in: `memory` (in-process; a test
 double, useless across processes) and `teams`, the real adapter that
-[`internal/channel/README.md`](internal/channel/README.md) documents. `teams`
-needs a base URL and, against a real tenant, a credential — and the credential
-is passed **by the NAME of an environment variable**, never by value:
+[`internal/channel/README.md`](internal/channel/README.md) documents.
+
+#### The two Teams auth modes
+
+`teams` needs a transport with an identity behind it, and there are exactly two.
+**Prefer the first.**
+
+**1. `apl` — recommended, and the only one used against a real tenant.**
+
+```
+convo listen --channel teams --teams-apl-handle ms:<label>
+```
+
+`apl` is the local identity broker. It already holds the OAuth grant and
+refreshes it, so this process is handed a *handle* — a label like `ms:<label>`,
+the kind `apl accounts` prints — and never a credential. Requests are executed
+as `apl call <handle> GET <url>`, which means there is no bearer token in a
+flag, in an environment variable, in this process's memory, in `ps` output, in
+shell history, or in anything this program can log. That is the entire argument
+for this mode: the safest way to hold a secret is not to be given one.
+
+The base URL defaults to `https://graph.microsoft.com/v1.0` — with apl there is
+no simulator to point at — and is still overridable with `--teams-base-url`.
+Setting `--teams-token-env` alongside a handle does not layer the two: the
+handle wins, the token is dropped, and the CLI says so on stderr.
+
+`--teams-apl-scope Chat.Read,ChannelMessage.Read.All` makes apl check the grant
+**locally, before any request leaves the machine**, and a shortfall comes back as
+a typed error carrying apl's own repair command verbatim:
+
+```
+apl call: missing scope(s): Chat.Read.
+Run: apl login ms:<label> --force --scope Chat.Read
+```
+
+It is **off by default**, and that is measured rather than lazy: on a live tenant
+apl refused `Chat.Read` for a handle whose token then served `GET /me/chats`
+perfectly well through that same handle with no `--scope` flag. apl's record of a
+grant can understate the token, and a transport that refuses a call the tenant
+would have served is the worse failure. Opt in when you want the earlier, better
+error; leave it off and let Graph's own 403 be the authority.
+
+The transport lives in [`internal/transport/apl`](internal/transport/apl) and is
+a plain `Doer`, so the Graph adapter above it — paging, delta cursors, threading,
+retry, path encoding — is byte-for-byte the code that ran against the simulator.
+One thing does not survive the broker: response **headers**, so `Retry-After` is
+lost and the throttle backoff falls back to its exponential ceiling.
+
+**2. `--teams-token-env` — a bearer token, for a Graph-shaped simulator.**
 
 ```
 convo listen --channel teams \
-  --teams-base-url https://graph.microsoft.com/v1.0 \
+  --teams-base-url http://127.0.0.1:4000/v1.0 \
   --teams-token-env TEAMS_BEARER
 ```
 
-`--teams-token-env TEAMS_BEARER` makes the CLI read `$TEAMS_BEARER` itself, so
-the secret never reaches the shell history, `ps` output, or a log line that
-echoes the command. `--teams-user` is a Graph-shaped simulator affordance and a
-real tenant ignores it.
+The credential is passed **by the NAME of an environment variable**, never by
+value: the CLI reads `$TEAMS_BEARER` itself, so the secret never reaches the
+shell history, `ps` output, or a log line that echoes the command. It is still a
+secret this process holds, which is why mode 1 exists. `--teams-user` is a
+simulator affordance for skipping OAuth and a real tenant ignores it.
 
 An unconfigured `respond` exits **65** rather than reporting a reply as sent
 when it had nowhere to go.
