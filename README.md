@@ -127,6 +127,7 @@ its own product surface, not credentials and not an unrestricted shell. See sect
 - Site: https://muthuishere.github.io/agent-conversations/
 - Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Contracts: [`INTERFACES.md`](INTERFACES.md)
+- Why it is built this way: [`decisions/`](decisions/) (ADRs 001–005)
 - Borrowing someone else's session: [`CROSS-SESSION.md`](CROSS-SESSION.md)
 - Writing a decision doc: [`OPTIONS-TEMPLATE.md`](OPTIONS-TEMPLATE.md)
 - Agent-side discipline: [`reference/skill/`](reference/skill/)
