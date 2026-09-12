@@ -307,8 +307,18 @@ func (a *App) emitMessages(o options, msgs []convo.Message) error {
 		return nil
 	}
 	for _, m := range msgs {
+		// The WHERE column must never understate the audience. It used to
+		// print "[dm]" for everything that was not a channel, which lumped
+		// 1:1s together with group chats AND meeting chats. That is not a
+		// cosmetic bug: in a live run it labelled a message from an
+		// eight-person standup meeting as "[dm]", an operator (me) read it as
+		// a private exchange, and the agent's reply went into the meeting in
+		// front of seven people who were not part of the test. Show the
+		// conversation's name whenever the channel gives us one; reserve
+		// "[dm]" for a conversation with no name, which is the only case where
+		// a two-person chat is actually implied.
 		where := "[dm]"
-		if m.Source.Kind == "channel" {
+		if m.Source.Name != "" {
 			where = "[" + m.Source.Name + "]"
 		}
 		text := strings.ReplaceAll(m.Text, "\n", " ")
