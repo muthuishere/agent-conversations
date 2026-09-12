@@ -37,7 +37,7 @@ func TestPolicy(t *testing.T) {
 		{StateIdle, DeliverNow},
 		{StateWorking, WaitThenDeliver},
 		{StateBlocked, RefuseBlocked},
-		{StateDone, FallBack},
+		{StateDone, DeliverNow},
 		{StateUnknown, FallBack},
 	}
 	for _, c := range cases {
@@ -45,12 +45,17 @@ func TestPolicy(t *testing.T) {
 			t.Errorf("Policy(%q) = %v, want %v", c.state, got, c.want)
 		}
 	}
-	// Only idle is deliverable. This is the assertion that stops a future
-	// "working is probably fine" from shipping.
-	for _, s := range []State{StateWorking, StateBlocked, StateDone, StateUnknown} {
+	// idle and done are deliverable; nothing else is. This is the assertion
+	// that stops a future "working is probably fine" from shipping. `done`
+	// belongs on the allowed side: it means the agent finished its turn and is
+	// waiting at a prompt, measured against Herdr 0.8.2 in a live run.
+	for _, s := range []State{StateWorking, StateBlocked, StateUnknown} {
 		if s.Deliverable() {
 			t.Errorf("%q must not be deliverable", s)
 		}
+	}
+	if !StateDone.Deliverable() {
+		t.Error("done must be deliverable — it is where an answering pane rests")
 	}
 	if !StateIdle.Deliverable() {
 		t.Error("idle must be deliverable")

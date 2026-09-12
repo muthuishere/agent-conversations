@@ -168,7 +168,9 @@ func (h *Host) Wait(ctx context.Context, name string, until []convo.State, timeo
 //     than left to a caller to remember;
 //  3. blocked — refuse, report, hold the message. The host rejects it too, so
 //     our job is detect-and-report, but we must not present it as delivered;
-//  4. done/unknown — treat as gone;
+//  4. unknown — treat as gone. NOT done: a done agent finished its turn and is
+//     sitting at a ready prompt, which is exactly where an answering pane lives
+//     between messages;
 //  5. working — bounded wait, then re-check; a target that is still not idle
 //     is a timeout, and the caller falls back.
 func (h *Host) Deliver(ctx context.Context, name, text string, opts convo.DeliverOpts) (convo.Delivery, error) {
@@ -198,11 +200,11 @@ func (h *Host) Deliver(ctx context.Context, name, text string, opts convo.Delive
 		if wait <= 0 {
 			wait = DefaultWait
 		}
-		st, werr := h.Wait(ctx, name, []convo.State{convo.StateIdle}, wait)
+		st, werr := h.Wait(ctx, name, []convo.State{convo.StateIdle, convo.StateDone}, wait)
 		if werr != nil {
 			return convo.Delivery{Agent: agent.Name, PaneID: agent.PaneID, FinalState: convo.StateWorking}, werr
 		}
-		if st != convo.StateIdle {
+		if !st.Deliverable() {
 			return convo.Delivery{Agent: agent.Name, PaneID: agent.PaneID, FinalState: st},
 				convo.Wrap(convo.ErrTimeout,
 					"agent %q was still %s after the bounded wait — fall back", name, st)

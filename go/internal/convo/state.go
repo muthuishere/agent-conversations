@@ -39,33 +39,40 @@ func ParseState(s string) State {
 }
 
 // Deliverable reports whether a message may be handed over right now.
-// Only idle qualifies. Everything else needs a decision, not a delivery.
-func (s State) Deliverable() bool { return s == StateIdle }
+//
+// idle and done both qualify. `done` was modelled as "gone" until a live run
+// proved otherwise: in Herdr, `done` means the agent FINISHED ITS LAST TURN and
+// is sitting at a ready prompt — it is not a corpse, it is the state every
+// answering pane settles into after it answers. Treating it as absent made the
+// second message of every conversation undeliverable, which is to say it broke
+// multi-turn entirely. Herdr agrees: `agent prompt --wait` lists idle, done and
+// blocked as settled states, and prompting a done agent is accepted.
+func (s State) Deliverable() bool { return s == StateIdle || s == StateDone }
 
-// Gone reports whether the target should be treated as absent: a finished
-// session and an unrecognised one are both "fall back, do not resurrect"
-// (CROSS-SESSION.md §2.3, §6).
-func (s State) Gone() bool { return s == StateDone || s == StateUnknown }
+// Gone reports whether the target should be treated as absent. Only an
+// unrecognised state qualifies: there is no evidence anyone is there, so the
+// rule is "fall back, do not resurrect" (CROSS-SESSION.md §2.3, §6).
+func (s State) Gone() bool { return s == StateUnknown }
 
 // Backpressure is the decision CROSS-SESSION.md §4 prescribes, as a value so it
 // can be tested without a host.
 type Backpressure int
 
 const (
-	// DeliverNow — the target is idle.
+	// DeliverNow — the target is idle, or done with its last turn.
 	DeliverNow Backpressure = iota
 	// WaitThenDeliver — the target is working; wait, bounded, then retry.
 	WaitThenDeliver
 	// RefuseBlocked — the target needs a human. Never deliver into blocked.
 	RefuseBlocked
-	// FallBack — the target is done, unknown or absent.
+	// FallBack — the target is unknown or absent.
 	FallBack
 )
 
 // Policy maps a state to the action a guest is allowed to take.
 func Policy(s State) Backpressure {
 	switch s {
-	case StateIdle:
+	case StateIdle, StateDone:
 		return DeliverNow
 	case StateWorking:
 		return WaitThenDeliver

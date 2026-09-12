@@ -120,11 +120,12 @@ func TestDeliverBackpressure(t *testing.T) {
 			wantErr: convo.ErrAgentBlocked, wantExit: convo.ExitBlocked,
 		},
 		{
-			name: "done is gone — fall back, do not resurrect",
+			name: "done delivers — a finished turn is a ready prompt, not a corpse",
 			responses: map[string]string{
-				"agent get responder-d": `{"result":{"agent":{"name":"responder-d","agent_status":"done","pane_id":"w3:p1"}}}`,
+				"agent get responder-d":    `{"result":{"agent":{"name":"responder-d","agent_status":"done","pane_id":"w3:p1"}}}`,
+				"agent prompt responder-d": `{"result":{"agent":{"name":"responder-d","agent_status":"working","pane_id":"w3:p1"}}}`,
 			},
-			wantErr: convo.ErrTargetAbsent, wantExit: convo.ExitUnavailable,
+			wantSent: true,
 		},
 		{
 			name:      "absent target is absent",
