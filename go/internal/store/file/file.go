@@ -120,27 +120,12 @@ func (s *Store) Journal() ([]convo.Message, error) {
 //
 // The cursor is written AFTER the messages are returned to the caller's slice,
 // which is the closest this API can get to "after the hand-off succeeded".
+//
+// It is NextMatching with no filter, which is not a shortcut: an unfiltered
+// consumer must still drain anything a previously-filtered one left held, or
+// dropping a filter would not bring those messages back (see held.go).
 func (s *Store) Next(limit int) ([]convo.Message, error) {
-	cur, err := s.readCursor()
-	if err != nil {
-		return nil, err
-	}
-	msgs, offsets, err := s.readFrom(cur)
-	if err != nil {
-		return nil, err
-	}
-	if len(msgs) == 0 {
-		return nil, nil
-	}
-	if limit > 0 && len(msgs) > limit {
-		msgs = msgs[:limit]
-		offsets = offsets[:limit]
-	}
-	newOffset := offsets[len(offsets)-1]
-	if err := s.writeCursor(newOffset); err != nil {
-		return nil, err
-	}
-	return msgs, nil
+	return s.NextMatching(limit, nil)
 }
 
 // Ack marks ids processed. Ack is NOT what stops redelivery — the read cursor

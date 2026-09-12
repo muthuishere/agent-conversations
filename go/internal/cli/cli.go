@@ -20,6 +20,7 @@ import (
 
 	memchan "github.com/muthuishere/agent-conversations/go/internal/channel/memory"
 	teamschan "github.com/muthuishere/agent-conversations/go/internal/channel/teams"
+	whatsappchan "github.com/muthuishere/agent-conversations/go/internal/channel/whatsapp"
 	"github.com/muthuishere/agent-conversations/go/internal/convo"
 	"github.com/muthuishere/agent-conversations/go/internal/host/exechost"
 	"github.com/muthuishere/agent-conversations/go/internal/host/herdr"
@@ -69,6 +70,21 @@ type options struct {
 	teamsAplScopes string
 	teamsScan      int
 
+	// whatsapp channel configuration. The handle names an apl identity; this
+	// package never sees a credential, which is the point of the broker.
+	waHandle       string
+	waChatLimit    int
+	waMessageLimit int
+
+	// consumer-side delivery filters (next / journal). These NEVER touch the
+	// journal: a filtered-out message is still on disk and still visible to
+	// `convo journal --all`. See convo.Filter and store/file/held.go.
+	mentionsMe  bool
+	from        stringList
+	excludeFrom stringList
+	match       string
+	kind        string
+
 	// ingest (fetch / listen)
 	in         string
 	prime      bool
@@ -88,7 +104,7 @@ const usage = `convo — a generic agent-conversation CLI.
   convo host deliver <name> <text>    hand a message over, respecting backpressure
   convo fetch                         one ingest pass: channel -> journal
   convo listen [--once]               fetch on a loop, with adaptive backoff
-  convo journal [--new]               look at the durable log (never consumes)
+  convo journal [--new|--all]         look at the durable log (never consumes)
   convo next [--count n] [--ack]      hand outstanding messages to this consumer
   convo ack <id...> | --all           mark messages processed
   convo respond <messageId> <text>    reply, routed from the message's own source
@@ -99,7 +115,7 @@ Global flags:
   --exec-cmd '<cmd>'  command for the exec host (or $CONVO_EXEC_CMD)
   --tag <t>           partition the journal/cursors (default $CONVO_TAG or "default")
   --home <dir>        state directory (default $AGENT_CONVERSATIONS_HOME)
-  --channel <name>    the transport (built in: memory, teams). No default: a reply
+  --channel <name>    the transport (built in: memory, teams, whatsapp). No default: a reply
                       with nowhere to go must fail loudly, not silently succeed.
   --json              machine-readable output
 
@@ -120,6 +136,23 @@ Teams channel flags (or the matching $CONVO_TEAMS_* env var):
   --teams-user <name>    x-user-name, for a Graph-shaped simulator only.
                          $CONVO_TEAMS_USER
   --teams-scan-depth <n> threads per channel scanned for replies (default 10)
+
+WhatsApp channel flags:
+  --whatsapp-handle <h>  apl handle for the account, e.g. whatsapp:personal
+                         (a bare label is accepted too). $CONVO_WHATSAPP_HANDLE
+  --whatsapp-chat-limit <n>     chats pulled per discovery pass (default 200)
+  --whatsapp-message-limit <n>  messages pulled per conversation per fetch (default 50)
+
+Delivery filters (next, journal) — composable, applied AT DELIVERY ONLY:
+  --mentions-me            only messages that mention the configured identity
+  --from <name|id>         repeatable; the repeats OR together
+  --exclude-from <name|id> repeatable; wins over --from
+  --match <regex>          on the message text
+  --in <needle>            conversation id or name (consumer side)
+  --kind chat|channel      the source kind
+  Different flags AND together. A filtered-out message is NEVER removed from
+  the journal ('convo journal --all' shows everything) and NEVER lost from the
+  delivery path: 'next' holds it and re-offers it once the filter allows it.
 
 Ingest flags (fetch, listen):
   --in <needle>       only conversations whose id or name matches
@@ -195,6 +228,18 @@ func (a *App) run(ctx context.Context, argv []string) error {
 	fs.StringVar(&o.teamsAplHandle, "teams-apl-handle", a.env("CONVO_TEAMS_APL_HANDLE", ""), "")
 	fs.StringVar(&o.teamsAplScopes, "teams-apl-scope", a.env("CONVO_TEAMS_APL_SCOPES", ""), "")
 	fs.IntVar(&o.teamsScan, "teams-scan-depth", envInt(a.env("CONVO_TEAMS_SCAN_DEPTH", "0")), "")
+	fs.StringVar(&o.waHandle, "whatsapp-handle", a.env("CONVO_WHATSAPP_HANDLE", ""), "")
+	fs.IntVar(&o.waChatLimit, "whatsapp-chat-limit", envInt(a.env("CONVO_WHATSAPP_CHAT_LIMIT", "0")), "")
+	fs.IntVar(&o.waMessageLimit, "whatsapp-message-limit", envInt(a.env("CONVO_WHATSAPP_MESSAGE_LIMIT", "0")), "")
+	fs.BoolVar(&o.mentionsMe, "mentions-me", false, "")
+	fs.Var(&o.from, "from", "")
+	fs.Var(&o.excludeFrom, "exclude-from", "")
+	fs.StringVar(&o.match, "match", "", "")
+	fs.StringVar(&o.kind, "kind", "", "")
+	// --in is BOTH an ingest selector (fetch/listen: what do we poll) and a
+	// delivery filter (next/journal: what do we hand over). Same spelling,
+	// same needle semantics, different command — deliberately, because
+	// narrowing ingest loses history and narrowing delivery does not.
 	fs.StringVar(&o.in, "in", "", "")
 	fs.BoolVar(&o.prime, "prime", false, "")
 	fs.BoolVar(&o.once, "once", false, "")
@@ -246,6 +291,7 @@ func (a *App) run(ctx context.Context, argv []string) error {
 var boolFlags = map[string]bool{
 	"json": true, "wait": true, "ack": true, "all": true, "new": true,
 	"prime": true, "once": true, "help": true, "h": true, "version": true,
+	"mentions-me": true,
 }
 
 // flagName strips the dashes and anything from `=` onwards.
@@ -414,6 +460,8 @@ func (a *App) channel(o options) (convo.Channel, error) {
 		return memchan.New(), nil
 	case "teams":
 		return a.teamsChannel(o)
+	case "whatsapp":
+		return a.whatsappChannel(o)
 	case "":
 		return nil, convo.Wrap(convo.ErrNotConfigured,
 			"no channel configured — pass --channel or $CONVO_CHANNEL; refusing to "+
@@ -479,6 +527,27 @@ func (a *App) teamsChannel(o options) (convo.Channel, error) {
 		cfg.Authorization = tok
 	}
 	return teamschan.New(cfg)
+}
+
+// whatsappChannel builds the wacli/apl-backed channel.
+//
+// There is no credential to pass and no token flag to get wrong: `apl` owns the
+// identity and injects the account, so the only configuration is WHICH account
+// — and naming one is mandatory. Defaulting to wacli's own default account
+// would mean an unattended listener could start answering from whichever number
+// happened to be configured, which is the kind of mistake that is only found
+// after a message has gone out.
+func (a *App) whatsappChannel(o options) (convo.Channel, error) {
+	if strings.TrimSpace(o.waHandle) == "" {
+		return nil, convo.Wrap(convo.ErrNotConfigured,
+			"--channel whatsapp needs --whatsapp-handle (or $CONVO_WHATSAPP_HANDLE), "+
+				"e.g. whatsapp:personal — refusing to guess which account speaks")
+	}
+	return whatsappchan.New(whatsappchan.Config{
+		Handle:       o.waHandle,
+		ChatLimit:    o.waChatLimit,
+		MessageLimit: o.waMessageLimit,
+	})
 }
 
 func (a *App) store(o options) (*filestore.Store, error) {

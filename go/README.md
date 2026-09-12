@@ -10,7 +10,7 @@ are inside a pane. The reasoning and the measurements behind fixing the host are
 in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §4.
 
 **The channel is the plugin axis.** Because the host is fixed, the growth is
-sideways: Teams today, WhatsApp next, whatever after that. Adding one is a new
+sideways: Teams, then WhatsApp, whatever after that. Adding one is a new
 package under `internal/channel/` implementing four methods, and nothing above it
 changes — [`internal/channel/README.md`](internal/channel/README.md) is the
 guide.
@@ -68,6 +68,7 @@ Plus the canonical envelope of `ARCHITECTURE.md` §5.2 as a struct
 | [`internal/host/herdr`](internal/host/herdr) | `Host` | **the delivery path.** Shells out to the agent host, respects backpressure, refuses to prompt its own pane |
 | [`internal/host/exechost`](internal/host/exechost) | `Host` | **a test double and a reference for the interface** — spawns a fresh agent per message. Not the recommended path; see below |
 | [`internal/channel/teams`](internal/channel/teams) | `Channel` | a real second channel: Microsoft Graph over HTTP — paging, delta cursors, threaded replies, throttling |
+| [`internal/channel/whatsapp`](internal/channel/whatsapp) | `Channel` | a third real channel, and the first that is not HTTP: two subprocesses (`wacli` + `apl`) over a local store, with a cursor the platform does not provide |
 | [`internal/channel/memory`](internal/channel/memory) | `Channel` | an in-process fake so the whole system is testable offline |
 | [`internal/store/file`](internal/store/file) | `Store` | the NDJSON journal + read cursor + acks of `INTERFACES.md` §2 |
 
@@ -109,7 +110,7 @@ convo host state <name>             one agent's state
 convo host deliver <name> <text>    hand a message over, respecting backpressure
 convo fetch                         one ingest pass: channel -> journal
 convo listen [--once]               fetch on a loop, with adaptive backoff
-convo journal [--new]               look at the durable log (NEVER consumes)
+convo journal [--new|--all]         look at the durable log (NEVER consumes)
 convo next [--count n] [--ack]      hand outstanding messages to this consumer
 convo ack <id...> | --all           mark messages processed
 convo respond <messageId> <text>    reply, routed from the message's own source
@@ -123,18 +124,24 @@ double, not a supported deployment) · `--exec-cmd '<cmd>'` · `--channel <name>
 Ingest flags (`fetch`, `listen`): `--in <needle>` · `--prime` · `--once` ·
 `--poll-active/-mid/-idle` · `--idle-1` · `--idle-2`.
 
+Delivery filters (`next`, `journal`): `--mentions-me` · `--from <name|id>` ·
+`--exclude-from <name|id>` · `--match <regex>` · `--in <needle>` ·
+`--kind chat|channel`.
+
 Teams flags: `--teams-apl-handle <handle>` · `--teams-apl-scope <a,b>` ·
 `--teams-base-url <url>` · `--teams-token-env <VAR>` · `--teams-user <name>` ·
-`--teams-scan-depth <n>`.
+`--teams-scan-depth <n>`. WhatsApp flags: `--whatsapp-handle <handle>` ·
+`--whatsapp-chat-limit <n>` · `--whatsapp-message-limit <n>`.
 
 Environment: `CONVO_HOST`, `CONVO_EXEC_CMD`, `CONVO_CHANNEL`, `CONVO_TAG`,
 `AGENT_CONVERSATIONS_HOME`, `CONVO_TEAMS_APL_HANDLE`, `CONVO_TEAMS_APL_SCOPES`,
 `CONVO_TEAMS_BASE_URL`, `CONVO_TEAMS_TOKEN_ENV`, `CONVO_TEAMS_USER`,
-`CONVO_TEAMS_SCAN_DEPTH`.
+`CONVO_TEAMS_SCAN_DEPTH`, `CONVO_WHATSAPP_HANDLE`,
+`CONVO_WHATSAPP_CHAT_LIMIT`, `CONVO_WHATSAPP_MESSAGE_LIMIT`.
 
-`--channel` has **no default**. Two are built in: `memory` (in-process; a test
-double, useless across processes) and `teams`, the real adapter that
-[`internal/channel/README.md`](internal/channel/README.md) documents.
+`--channel` has **no default**. Three are built in: `memory` (in-process; a test
+double, useless across processes), `teams` and `whatsapp`, the two real adapters
+that [`internal/channel/README.md`](internal/channel/README.md) documents.
 
 #### The two Teams auth modes
 
@@ -198,6 +205,62 @@ simulator affordance for skipping OAuth and a real tenant ignores it.
 
 An unconfigured `respond` exits **65** rather than reporting a reply as sent
 when it had nowhere to go.
+
+### `--channel whatsapp` — two binaries, no credential
+
+```
+convo listen --channel whatsapp --whatsapp-handle whatsapp:personal
+```
+
+The third channel, and the first that is not an HTTP API: it drives `wacli` (a
+local WhatsApp CLI over a synced SQLite store) and `apl` (the identity broker).
+`convo.Channel` did not change to accommodate it — see
+[`internal/channel/README.md`](internal/channel/README.md).
+
+The split between the two binaries is deliberate and is **not** symmetric:
+
+| | command | why |
+|---|---|---|
+| **reads** | `wacli --account <label> …` | a query against a database on this machine |
+| **writes** | `apl with whatsapp:<label> -- wacli send text …` | it leaves the machine, under a real person's number |
+
+There is no token flag, because there is no token: `apl` holds the account and
+injects `--account`, so this process is never handed a credential. The handle is
+**mandatory** — defaulting to whichever account `wacli` calls default is how an
+unattended listener starts answering from the wrong phone number, and that is
+only ever discovered after a message has gone out.
+
+Three measured facts the adapter is built on:
+
+- **`--message` is a flag, not a positional.** `wacli send text --to X "hi"`
+  fails outright.
+- **The JID suffix is the routing taxonomy.** `…@g.us` is a group (envelope kind
+  `channel`), `…@s.whatsapp.net` is a 1:1 (`chat`). Unlike Teams this needs no
+  composite conversation id: the JID already says what it addresses, so `Send`
+  **checks** the routing instead of inferring it and refuses a `Target` whose
+  kind disagrees with its JID. Newsletters and status broadcasts are skipped —
+  they are not conversation, and each one passed through costs an agent turn.
+- **`wacli sync` can silently miss the newest messages**, and this adapter never
+  runs sync (a long-running write that belongs to whoever owns the account). So
+  **a read here is not authoritative**: a quiet `fetch` means "the local store
+  has nothing new", which is not the same as "nobody wrote". That is the honest
+  price of a poll-first adapter on a platform whose only real inbound path is a
+  webhook, and it is stated rather than discovered later.
+
+`wacli` offers no cursor of any kind, so the adapter **invents one**: a
+timestamp watermark plus the ids seen at its boundary, base64-JSON behind the
+interface's opaque string. WhatsApp timestamps are second-granular, so two
+messages routinely share one and a bare `ts >` watermark drops the second
+silently; the adapter therefore re-asks from **one second before** the watermark
+and deduplicates by message id. Overlap is cheap, loss is not. `PrimeCursor`
+(the same package-level affordance `teams` has, deliberately not on the
+interface) starts a fresh conversation at *now* instead of replaying a person's
+whole history into the journal.
+
+**Sending is outward-facing and real, and no test in this repo sends anything.**
+The send path is exercised against a fake `wacli` and a fake `apl` written into
+`t.TempDir()` — the fake `apl` strips `with <handle> --` and execs the rest, so
+the real argv is built and really executed, by something that is not WhatsApp.
 
 ### `convo self` — the one that matters
 
@@ -317,6 +380,59 @@ without a drain, "queue in the journal" is "leak into the journal".
 
 ---
 
+## Delivery filters, and what `next` does with what they reject
+
+`--mentions-me`, `--from`, `--exclude-from`, `--match`, `--in` and `--kind`
+apply to **`next` and `journal`**. Repeats of one flag **OR** together;
+different flags **AND** together (`INTERFACES.md` §1). Point the tool at a busy
+group without them and the agent is handed every message in the room, including
+the ones nobody addressed to it.
+
+Two rules, and they are the entire design:
+
+**1. A filter is not a delete.** It applies at delivery and never to the
+journal. `convo journal --all` ignores every filter and is the command that
+proves a filter dropped nothing; if the two ever disagree, the filter is the
+bug. Self-echo suppression is *not* a filter — it stays upstream in the channel,
+where it cannot be switched off by a flag.
+
+**2. A filtered-out message is HELD, not skipped.** This is the cursor rule, and
+it is the same class of bug as cursor-vs-ack above. The read cursor is a byte
+offset meaning "a consumer has been handed everything below this". Add a filter
+and that sentence stops being true, and the two obvious fixes are both wrong:
+
+| | what happens |
+|---|---|
+| advance the cursor anyway | the rejected message is gone from the delivery path forever — **a filter silently destroys traffic the agent never saw** |
+| stall at the first rejection | one permanently-rejected message at the head blocks the cursor, so everything behind it is redelivered on **every** call — head-of-line blocking that degrades into infinite redelivery |
+
+So the delivery position becomes **two** things, and the invariant is stated
+positively:
+
+> **No message leaves the deliverable set without being handed to a consumer.**
+
+The read cursor advances past a rejected message **only** because that message's
+id is written to a durable hold list — `cursor/<tag>.held.json`, beside the read
+cursor and the acks — in the same operation, and **written first**, so a crash
+between the two re-examines what is already held rather than advancing past
+something nothing recorded. `next` re-evaluates the hold list against the
+**current** filter before it looks at anything new, so held messages are
+delivered ahead of newer traffic the moment the filter allows them. Dropping the
+filter entirely delivers everything it was holding back.
+
+```
+convo next --mentions-me     # one message; three are held
+convo journal --all          # all four, untouched, on disk
+convo next                   # the three held ones, oldest first
+```
+
+The cost, stated plainly: a held id is re-checked on every `next`, so a filter
+that rejects a lot accumulates work proportional to what it rejected, and the
+list is capped (`HeldCap`) — past that the oldest ids fall out of the *delivery*
+path while remaining in the journal. Nothing is ever deleted from disk.
+
+---
+
 ## Tests
 
 `go test ./...` passes **offline**: no network, no host server, no credentials.
@@ -343,6 +459,22 @@ without a drain, "queue in the journal" is "leak into the journal".
   wire percent-encoded — `19:…@thread.tacv2` unencoded is a 404 on every request
   and a silently deaf listener. That last one caught a real bug before any live
   server did.
+
+- **the delivery filters, end to end against the memory channel**: a room with
+  four senders and one mention, asserting all three halves — `--mentions-me`
+  delivers only the mention, `journal --all` still shows the other three and the
+  journal file still holds four lines, and dropping the filter delivers the
+  three held ones without redelivering the answered one. Plus composition
+  (`--from` ORs, `--exclude-from` wins), a bad regexp and an unknown `--kind`
+  failing at 65, and the hold list existing on disk;
+- **the WhatsApp channel, against fake `wacli` and `apl` binaries** in
+  `t.TempDir()`: JID-suffix routing, self-echo suppression by identity *and*
+  `FromMe`, reactions and deleted messages dropped, captioned media kept,
+  mention detection by phone number rather than display name, the invented
+  cursor's one-second overlap and id dedupe, an unreadable cursor failing
+  loudly, the real send argv (`--message` as a flag, `--reply-to` for a group
+  quote, a kind/JID mismatch refused, an id-less success refused). **No test
+  sends a WhatsApp message**; every fixture in that file is synthetic.
 
 Two live tests exist and both are **skipped by default**:
 

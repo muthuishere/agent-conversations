@@ -13,6 +13,7 @@ Two implementations exist to copy from, and they are deliberately unalike:
 |---|---|---|
 | [`memory`](memory/) | in-process fake, no network | the minimal shape of a correct `Channel` |
 | [`teams`](teams/) | Microsoft Graph over HTTP | paging, delta cursors, threading, throttling, encoding traps |
+| [`whatsapp`](whatsapp/) | two subprocesses over a local store | a transport that is **not** an HTTP API, a cursor invented where the platform has none, and an identity broker instead of a credential |
 
 ---
 
@@ -230,8 +231,16 @@ must be re-checked against the live API before you rely on it.
 |---|---|---|---|---|---|
 | **Teams / Graph** ✅ *verified* | `…/messages/delta` + `$deltatoken`, one per conversation | change notifications (needs a public HTTPS endpoint) — *unverified* | channels are 2-level (root + replies); chats are flat | thread replies vs chat messages, different endpoints | delta does **not** carry replies, and `…/replies/delta` is 404. Ids need `%3A`/`%40`. Throttles hard |
 | **WhatsApp (BSP)** — *unverified* | typically **no** poll API; the webhook is the only inbound path | webhook, usually mandatory | flat, with an optional quoted-message reference | one conversation per phone number | you will probably need a public callback and a store-and-forward front end, which changes the daemon's shape more than the other two |
+| **WhatsApp via `wacli`** ✅ *verified* | `wacli messages list --chat <jid> --after <ts> --asc` against a **local** store | none — the store is filled by a separate `wacli sync` | flat: a message's thread is itself; quoting is `--reply-to <msgId>` | the JID; `@g.us` = group, `@s.whatsapp.net` = 1:1 | no cursor at all, so the adapter invents a timestamp watermark + boundary ids and re-asks one second early (timestamps are second-granular). `--message` is a **flag**. Reads are `wacli --account <label>`, sends go through `apl with whatsapp:<label> --`, so no credential ever reaches the process. **A read is not authoritative**: sync can miss the newest messages |
 | **Slack** — *unverified* | `conversations.history` + `cursor`; threads via `conversations.replies` | Events API / Socket Mode — Socket Mode is a genuine push with no public endpoint | 2-level like Teams: `thread_ts` marks a threaded reply | `chat.postMessage` with or without `thread_ts` | `ts` is both the id and the ordering key; bot vs user identity matters for suppression |
 
 The shape to notice: **Teams and Slack are both two-level**, so the composite-cursor pattern in
-`teams` ports almost directly. WhatsApp is the one that breaks the poll-first assumption, and
-that is worth knowing before you start rather than after.
+`teams` ports almost directly. WhatsApp is the one that breaks the poll-first assumption — the
+row above is how it was resolved in practice: not by talking to a BSP webhook, but by polling a
+local store somebody else syncs, and being honest in the package comment that a quiet fetch
+therefore means "nothing new **locally**" rather than "nobody wrote".
+
+The other thing `whatsapp` demonstrates: **the two optional affordances did not become interface
+methods.** `PrimeCursor` is a package method on both real adapters, and identity brokering is a
+config field, not a fifth method. An interface that grows a method every time one platform needs
+something is an interface that stops being portable.

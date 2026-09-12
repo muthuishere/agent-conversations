@@ -160,6 +160,11 @@ func (a *App) cmdHost(ctx context.Context, o options, args []string) error {
 
 // cmdJournal looks at the log. READING IS NOT CONSUMING: this never advances
 // the read cursor, so an audit can never steal a message from a consumer.
+//
+// Delivery filters apply to the OUTPUT here and to nothing else. The journal
+// on disk is untouched and complete, and `--all` says so out loud by ignoring
+// every filter — which is the command you run to prove a filter dropped
+// nothing. If those two ever disagree, the filter is the bug.
 func (a *App) cmdJournal(ctx context.Context, o options) error {
 	st, err := a.store(o)
 	if err != nil {
@@ -177,24 +182,55 @@ func (a *App) cmdJournal(ctx context.Context, o options) error {
 	if err != nil {
 		return err
 	}
+	if !o.all {
+		f, ferr := o.filter()
+		if ferr != nil {
+			return ferr
+		}
+		if f.Active() {
+			kept := make([]convo.Message, 0, len(msgs))
+			for _, m := range msgs {
+				if f.Allows(m) {
+					kept = append(kept, m)
+				}
+			}
+			msgs = kept
+		}
+	}
 	return a.emitMessages(o, msgs)
 }
 
-// cmdNext hands outstanding messages to this consumer and advances the read
-// cursor past exactly those. This is the ONLY command that advances it.
+// cmdNext hands outstanding messages to this consumer and advances the
+// delivery position past exactly those. This is the ONLY command that advances
+// it.
+//
+// With a filter, "the delivery position" is the read cursor AND the hold list
+// together, and the rule is one sentence: NO MESSAGE LEAVES THE DELIVERABLE
+// SET WITHOUT BEING HANDED TO A CONSUMER. A message the filter rejects is
+// written to the hold list before the cursor moves past it, re-checked against
+// the current filter on every later `next`, and delivered — ahead of newer
+// traffic — as soon as the filter allows it. Widening or dropping a filter
+// therefore recovers everything it had been holding back. The reasoning, and
+// the two wrong answers it replaces, are in store/file/held.go.
 func (a *App) cmdNext(ctx context.Context, o options) error {
 	st, err := a.store(o)
 	if err != nil {
 		return err
 	}
-	msgs, err := st.Next(o.count)
+	f, err := o.filter()
+	if err != nil {
+		return err
+	}
+	msgs, err := st.NextMatching(o.count, f.Allows)
 	if err != nil {
 		return err
 	}
 	if len(msgs) == 0 {
 		// Aging out with nothing to deliver is exit 64 and is NOT an error.
 		// Collapsing it into a generic failure is how an agent learns to treat
-		// a quiet channel as a fault, or a dead one as quiet.
+		// a quiet channel as a fault, or a dead one as quiet. A filter that
+		// matched nothing lands here too, which is correct: nothing to answer
+		// is nothing to answer, and the traffic is still in the journal.
 		return convo.Wrap(convo.ErrTimeout, "nothing outstanding")
 	}
 	if o.ack {

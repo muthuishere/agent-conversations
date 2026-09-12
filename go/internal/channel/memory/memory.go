@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,11 @@ func (c *Channel) appendLocked(convID, fromID, fromName, text string) convo.Mess
 		At:   c.now().UTC().Format(time.RFC3339Nano),
 		From: convo.Author{ID: fromID, Name: fromName},
 		Text: text,
+		// A mention is an ID match, never a display-name match: a name is text
+		// anyone on a real channel may be able to choose, so "@agent" from a
+		// stranger must not make a message look addressed to us. The fake
+		// spells a mention "@u-agent" for exactly that reason.
+		MentionsMe: strings.Contains(text, "@"+c.self.ID),
 		Source: convo.Source{
 			Kind: kind, ConversationID: convID, Name: name, ThreadID: id,
 		},
