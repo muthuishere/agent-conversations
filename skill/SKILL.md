@@ -43,7 +43,7 @@ give you:
 - **Not hand-rolling injection.** Typing into someone else's terminal is where this class of tool
   goes wrong; the host owns submission and rejects it when the target cannot accept input.
 
-Check it first: `command -v herdr`, then `convo self`.
+Check it first: run `convo doctor` first; it enforces ADR-001/002 (apl and Herdr both mandatory) and prints a clear remediation for whichever is missing. `command -v herdr`, then `convo self`, are the manual version of the same check.
 
 (The `exec` host — `--host=exec --exec-cmd='<cmd>'` — exists as a second implementation of the same
 interface, which is how we know the seam is real. It is not a Herdr substitute for live sessions.)
@@ -77,6 +77,7 @@ convo journal [--new]               look at the durable log (never consumes)
 convo next [--count n] [--ack]      hand outstanding messages to this consumer
 convo ack <id...> | --all           mark messages processed
 convo respond <messageId> <text>    reply, routed from the message's own source
+convo doctor                        check apl/herdr prerequisites; run this first — it enforces ADR-001/002
 convo version
 ```
 

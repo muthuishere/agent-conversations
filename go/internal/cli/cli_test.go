@@ -43,6 +43,7 @@ echo '{"error":{"code":"unsupported","message":"fake"}}'; exit 1
 
 func runCLI(t *testing.T, env map[string]string, argv ...string) (int, string, string) {
 	t.Helper()
+	env = withDefaultHerdr(t, env)
 	var out, errBuf bytes.Buffer
 	app := &App{
 		Stdout: &out, Stderr: &errBuf,
@@ -50,6 +51,24 @@ func runCLI(t *testing.T, env map[string]string, argv ...string) (int, string, s
 	}
 	code := app.Run(context.Background(), argv)
 	return code, out.String(), errBuf.String()
+}
+
+// withDefaultHerdr makes sure every test in this package sees a working herdr
+// on $HERDR_BIN_PATH unless it deliberately supplied its own (paneEnv does, to
+// test specific agent states). `host list|state|deliver` and `next` now run a
+// shared herdr preflight (ADR-001), so a test that was never about herdr's
+// reachability — most of the `next`/filter/ingest suite — needs a herdr that
+// always answers, not a real absent one.
+func withDefaultHerdr(t *testing.T, env map[string]string) map[string]string {
+	t.Helper()
+	out := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		out[k] = v
+	}
+	if out["HERDR_BIN_PATH"] == "" {
+		out["HERDR_BIN_PATH"] = fakeHerdrOnPath(t)
+	}
+	return out
 }
 
 func paneEnv(t *testing.T) map[string]string {

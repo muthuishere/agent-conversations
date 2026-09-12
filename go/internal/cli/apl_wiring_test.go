@@ -55,6 +55,49 @@ func TestSimulatorPathIsUnchangedByTheAplOption(t *testing.T) {
 	}
 }
 
+// ADR-002, Tightened: --teams-token-env is kept ONLY for the local simulator.
+// A loopback base URL (the simulator's shape) is allowed through unchanged;
+// anything else is refused at exit 65, naming the apl handle as the real fix.
+func TestTeamsTokenEnvRefusedAgainstNonLoopback(t *testing.T) {
+	const secret = "not-a-real-token"
+	getenv := func(k string) string {
+		if k == "TEAMS_AUTH" {
+			return secret
+		}
+		return ""
+	}
+
+	// Loopback stays allowed — this is the existing simulator path and must
+	// not regress.
+	for _, u := range []string{
+		"http://127.0.0.1:4000/v1.0",
+		"http://localhost:4000/v1.0",
+		"http://[::1]:4000/v1.0",
+	} {
+		a := &App{Getenv: getenv, Stderr: &bytes.Buffer{}}
+		if _, err := a.channel(options{
+			channel: "teams", teamsBaseURL: u, teamsTokenEnv: "TEAMS_AUTH",
+		}); err != nil {
+			t.Fatalf("loopback base url %q was refused: %v", u, err)
+		}
+	}
+
+	// A real tenant's URL must be refused outright — apl is the only way in.
+	a := &App{Getenv: getenv, Stderr: &bytes.Buffer{}}
+	_, err := a.channel(options{
+		channel: "teams", teamsBaseURL: "https://graph.microsoft.com/v1.0", teamsTokenEnv: "TEAMS_AUTH",
+	})
+	if err == nil {
+		t.Fatal("a raw token against a non-loopback base url was accepted")
+	}
+	if !strings.Contains(err.Error(), "teams-apl-handle") {
+		t.Fatalf("refusal does not point at the real fix: %v", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatal("the refusal leaked the credential")
+	}
+}
+
 // With neither mode configured there is nowhere to send, and the error has to
 // name both ways out.
 func TestNeitherModeNamesBothWaysOut(t *testing.T) {

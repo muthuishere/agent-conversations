@@ -19,6 +19,7 @@ import (
 // the same room — which is the whole point of an ingest test.
 func runWith(t *testing.T, ch convo.Channel, env map[string]string, argv ...string) (int, string, string) {
 	t.Helper()
+	env = withDefaultHerdr(t, env)
 	var out, errBuf bytes.Buffer
 	app := &App{
 		Stdout: &out, Stderr: &errBuf,

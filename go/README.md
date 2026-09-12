@@ -114,8 +114,21 @@ convo journal [--new|--all]         look at the durable log (NEVER consumes)
 convo next [--count n] [--ack]      hand outstanding messages to this consumer
 convo ack <id...> | --all           mark messages processed
 convo respond <messageId> <text>    reply, routed from the message's own source
+convo doctor                        check apl/herdr prerequisites; exit 0 only if the mandatory ones pass
 convo version
 ```
+
+Run `convo doctor` first in any new environment — it checks every prerequisite ADR-001
+(`../decisions/001-herdr-is-the-required-host.md`) and ADR-002
+(`../decisions/002-apl-is-the-required-credential-broker.md`) declare mandatory (apl on PATH with
+at least one handle, herdr on PATH, a herdr server actually reachable) and prints a table, human by
+default, `--json` for scripts. It exits 0 only if every mandatory row passes; a failed mandatory
+check exits 65 with a one-line remediation — never a stack trace. `--channel <name>` adds one more
+row for that channel's own reachability. `host list|state|deliver` and `next` run the same
+herdr-server check as a fast preflight before doing any work, so a missing server fails in well
+under a second with the same remediation line `doctor` prints, instead of a raw JSON error from a
+CLI shell-out three steps later. `fetch`, `listen`, `journal` and `respond` do not run that
+preflight — they never touch the agent host.
 
 Global flags: `--host herdr|exec` (default `herdr`; `exec` is the spawning test
 double, not a supported deployment) · `--exec-cmd '<cmd>'` · `--channel <name>` ·

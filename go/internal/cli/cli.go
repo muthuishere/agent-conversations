@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -108,6 +109,7 @@ const usage = `convo — a generic agent-conversation CLI.
   convo next [--count n] [--ack]      hand outstanding messages to this consumer
   convo ack <id...> | --all           mark messages processed
   convo respond <messageId> <text>    reply, routed from the message's own source
+  convo doctor                        check apl/herdr prerequisites (ADR-001/002); exit 0 only if the mandatory ones pass
   convo version
 
 Global flags:
@@ -273,6 +275,8 @@ func (a *App) run(ctx context.Context, argv []string) error {
 		return a.cmdAck(ctx, o, args)
 	case "respond":
 		return a.cmdRespond(ctx, o, args)
+	case "doctor":
+		return a.cmdDoctor(ctx, o)
 	default:
 		fmt.Fprint(a.Stdout, usage)
 		return convo.Wrap(convo.ErrNotConfigured, "unknown command %q", cmd)
@@ -513,6 +517,17 @@ func (a *App) teamsChannel(o options) (convo.Channel, error) {
 		ReplyScanDepth: o.teamsScan,
 	}
 	if o.teamsTokenEnv != "" {
+		// ADR-002 (Tightened): a raw token is kept ONLY for the local
+		// simulator, and is not to be used against a real tenant. That is a
+		// rule, not a suggestion, so it is enforced here rather than left to a
+		// teammate's memory — a real tenant goes through apl
+		// (--teams-apl-handle), full stop.
+		if !isLoopbackURL(o.teamsBaseURL) {
+			return nil, convo.Wrap(convo.ErrNotConfigured,
+				"--teams-token-env is for the local simulator only (ADR-002, "+
+					"Tightened) — %q is not loopback; use --teams-apl-handle "+
+					"for a real tenant", o.teamsBaseURL)
+		}
 		tok := a.env(o.teamsTokenEnv, "")
 		if tok == "" {
 			// Name the VARIABLE, never the value. Failing loudly here is the
@@ -562,6 +577,23 @@ func (a *App) print(o options, human string, v any) error {
 	}
 	fmt.Fprintln(a.Stdout, human)
 	return nil
+}
+
+// isLoopbackURL reports whether raw's host is loopback — localhost, 127.0.0.1
+// or ::1 — which is the ONLY place ADR-002 (Tightened) allows a raw
+// --teams-token-env to be used. A URL that fails to parse is treated as not
+// loopback: refusing is the safe direction for a malformed base URL, never
+// silently allowing a raw token through.
+func isLoopbackURL(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 // splitList turns a comma-separated flag into a slice, dropping blanks so a

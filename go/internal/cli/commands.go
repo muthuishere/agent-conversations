@@ -94,6 +94,13 @@ func (a *App) cmdHost(ctx context.Context, o options, args []string) error {
 	if len(args) == 0 {
 		return convo.Wrap(convo.ErrNotConfigured, "host needs a sub-command: list | state | deliver")
 	}
+	// Fast-fail on a missing herdr server BEFORE any real work: ADR-001 makes
+	// Herdr mandatory for every host command, and the caller deserves the same
+	// one-line remediation `convo doctor` prints, not a raw JSON error surfaced
+	// three shell-outs later.
+	if err := a.herdrPreflight(ctx, o); err != nil {
+		return err
+	}
 	h, env, err := a.host(o)
 	if err != nil {
 		return err
@@ -213,6 +220,12 @@ func (a *App) cmdJournal(ctx context.Context, o options) error {
 // therefore recovers everything it had been holding back. The reasoning, and
 // the two wrong answers it replaces, are in store/file/held.go.
 func (a *App) cmdNext(ctx context.Context, o options) error {
+	// Same fast-fail as host list|state|deliver: `next` hands messages to a
+	// consumer that is expected to be a herdr-hosted agent, so a missing
+	// server is refused up front with the same remediation line.
+	if err := a.herdrPreflight(ctx, o); err != nil {
+		return err
+	}
 	st, err := a.store(o)
 	if err != nil {
 		return err
