@@ -164,7 +164,7 @@ func (a *App) doctorHerdrOnPath() (doctorCheck, bool) {
 	c := doctorCheck{
 		Name:      "herdr on PATH",
 		Mandatory: true,
-		NeededBy:  "host list|state|deliver, next",
+		NeededBy:  "host list|state|deliver",
 	}
 	if bp := strings.TrimSpace(a.env("HERDR_BIN_PATH", "")); bp != "" {
 		if st, err := os.Stat(bp); err == nil && !st.IsDir() {
@@ -196,7 +196,7 @@ func (a *App) doctorHerdrServer(ctx context.Context, binOK bool) doctorCheck {
 	c := doctorCheck{
 		Name:      "herdr server reachable",
 		Mandatory: true,
-		NeededBy:  "host list|state|deliver, next",
+		NeededBy:  "host list|state|deliver",
 	}
 	if !binOK {
 		c.Remediation = "install herdr first (see the row above)"

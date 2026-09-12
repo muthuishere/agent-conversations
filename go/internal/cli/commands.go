@@ -221,12 +221,13 @@ func (a *App) cmdJournal(ctx context.Context, o options) error {
 // therefore recovers everything it had been holding back. The reasoning, and
 // the two wrong answers it replaces, are in store/file/held.go.
 func (a *App) cmdNext(ctx context.Context, o options) error {
-	// Same fast-fail as host list|state|deliver: `next` hands messages to a
-	// consumer that is expected to be a herdr-hosted agent, so a missing
-	// server is refused up front with the same remediation line.
-	if err := a.herdrPreflight(ctx, o); err != nil {
-		return err
-	}
+	// No host preflight here. `next` reads the journal and advances this
+	// consumer's read cursor; it never addresses an agent. Requiring a herdr
+	// server made the pure-consumer path — fetch, next, respond — impossible
+	// without one, which a live run hit immediately: a real reply was sitting
+	// in the journal and could not be taken because no pane was running. The
+	// host is required to DELIVER to an agent (ADR-001), not to read one's
+	// own mail.
 	st, err := a.store(o)
 	if err != nil {
 		return err
