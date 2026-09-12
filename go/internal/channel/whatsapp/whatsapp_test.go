@@ -80,7 +80,7 @@ case "$*" in
       {"ChatJID":"` + groupJID + `","ChatName":"#general","MsgID":"AAA5","SenderJID":"` + bobJID + `","SenderName":"bob","Timestamp":"2026-09-12T10:00:05Z","FromMe":false,"Text":"","MediaType":"image","MediaCaption":"the graph"}
     ]},"error":null}' ;;
   *"send text"*)
-    echo '{"success":true,"data":{"msg_id":"SENT1","to":"x","timestamp":"2026-09-12T10:01:00Z"},"error":null}' ;;
+    echo '{"success":true,"data":{"id":"SENT1","sent":true,"to":"1234567890@s.whatsapp.net"},"error":null}' ;;  # measured live shape
   *) echo '{"success":false,"data":null,"error":{"message":"unsupported"}}'; exit 1 ;;
 esac
 `
