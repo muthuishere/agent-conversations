@@ -161,9 +161,13 @@ These are the rules the rest of the repo paid for. Each one is a real failure th
   `watch`-style re-checking. A loop burns a full agent turn and real tokens on every tick even
   when nothing happened, and still misses whatever lands between ticks. Let something else wake
   you; drain at a checkpoint when you are already awake.
-- **Check state before delivering.** `convo host state <name>` first. `idle` → deliver.
-  `working` → wait, bounded, then retry (`convo host deliver --wait …`). `done`/`unknown` → fall back; **never restart a
-  session you did not start.**
+- **Check state before delivering.** `convo host state <name>` first. `idle` **or `done`** →
+  deliver. `working` → wait, bounded, then retry (`convo host deliver --wait …`). `unknown` →
+  fall back; **never restart a session you did not start.**
+- **`done` is a ready prompt, not a corpse.** A finished TURN, not a finished session — it is
+  where an answering pane rests between messages. A fresh pane is `idle` for its first delivery
+  and `done` for every one after, so treating `done` as gone makes multi-turn impossible: it
+  broke on the second message of every conversation in a live run before this was fixed.
 - **Never deliver into `blocked`.** A blocked session is parked on a prompt a human must clear.
   The CLI refuses with **75** and holds the message. Treat that as "a person is needed", not as a
   retry.
@@ -174,6 +178,13 @@ These are the rules the rest of the repo paid for. Each one is a real failure th
   **never re-offered** by the wake path — it simply leaks into the journal. In a real run three
   messages sat unacked at the end and nothing ever came back for them. Drain explicitly, or accept
   that a declined message needs a human.
+- **A wake keyed on `--new` storms unless the handler acks.** `--new` means UNACKED, and
+  `convo next` advances the read cursor **without** acking. So a daemon that wakes on
+  "unacked > 0" wakes the agent again on every pass for a message that was already answered —
+  measured live: one message from one colleague woke the pane four times in four minutes, each
+  wake spending a full turn re-answering it. Two guards, and you want both: the handler acks
+  after it responds (that is what ack means), and the waker refuses to wake twice for the same
+  newest-unacked id, which covers the unavoidable window between delivery and ack.
 - **Reading is not consuming.** `convo journal` never advances the read cursor, so an audit can
   never steal a message from a consumer. `convo next` is the only command that advances it. `ack`
   is a separate "I finished with this" mark — it is not what prevents redelivery.
