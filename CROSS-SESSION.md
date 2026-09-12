@@ -107,13 +107,23 @@ The state machine gives you a real policy instead of a guess.
 ```
 get state
 ├── idle              → deliver now
-├── working           → queue; retry after `wait --until idle --timeout N`
+├── done              → deliver now. A finished TURN, not a finished session.
+├── working           → queue; retry after `wait --until idle,done --timeout N`
 ├── blocked           → DO NOT deliver. A human is needed. Alert, hold the message.
-├── done              → the session has finished; treat as gone (§6)
 └── unknown/absent    → treat as gone (§6)
 ```
 
 Rules that keep this honest:
+
+- **`done` is a ready prompt, not a corpse.** This doc said "the session has finished; treat
+  as gone" and it was wrong — a live multi-turn test broke on the second message of every
+  conversation because of it. `done` means the agent COMPLETED ITS LAST TURN and is waiting
+  at a prompt, which is exactly where an answering pane rests between messages. A fresh pane
+  is `idle` for its first delivery only; it is `done` for every one after. Herdr says so
+  itself — `agent prompt --wait` lists idle, done and blocked as *settled* states, and
+  prompting a done agent is accepted (measured on 0.8.2). Treat only `unknown`/absent as
+  gone. Correspondingly, a bounded wait must settle on **idle OR done**: waiting for idle
+  alone times out on the state the agent is most likely to reach.
 
 - **Never deliver into `blocked`.** The message lands behind a dialog and is invisible until
   a human clears it — the message looks delivered and isn't.
