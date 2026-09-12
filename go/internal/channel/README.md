@@ -105,7 +105,12 @@ That is faithful to the platform and a foot-gun in production: it wakes an agent
 message anyone ever sent. Offer a way to start from *now* — `teams` exposes `PrimeCursor`,
 which runs the fetch and returns only the cursor. This is a package method, **not** part of
 `convo.Channel`; the interface has no vocabulary for "position me at the present", and that is
-a real gap, recorded here rather than papered over by widening the interface.
+a real gap, recorded here rather than papered over by widening the interface. The ingest loop
+uses it **by default**: a conversation it has no cursor for is primed at now and its past is not
+ingested (`--replay-history` opts back into the backlog). Priming is one-shot per conversation —
+it happens exactly once, when the cursor is first created — and it has to be the default rather
+than a flag because discovery drifts: a capped, moving chat listing keeps surfacing "new"
+conversations on later polls, and each one arrives cursorless.
 
 ---
 

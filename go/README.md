@@ -134,8 +134,33 @@ Global flags: `--host herdr|exec` (default `herdr`; `exec` is the spawning test
 double, not a supported deployment) · `--exec-cmd '<cmd>'` · `--channel <name>` ·
 `--tag <t>` · `--home <dir>` · `--json` · `--wait` · `--timeout <dur>`.
 
-Ingest flags (`fetch`, `listen`): `--in <needle>` · `--prime` · `--once` ·
-`--poll-active/-mid/-idle` · `--idle-1` · `--idle-2`.
+Ingest flags (`fetch`, `listen`): `--in <needle>` · `--replay-history` · `--fetch-parallel <n>` ·
+`--once` · `--poll-active/-mid/-idle` · `--idle-1` · `--idle-2` (`--prime` is accepted as a no-op).
+
+**A conversation with no cursor starts at now.** The first time `fetch`/`listen` meets a
+conversation it has no cursor for — first attach, or a room that discovery only surfaced later —
+it primes the cursor at the present (the adapter's `PrimeCursor`) and ingests nothing from the
+room's past. Priming is one-shot per conversation: once a cursor exists it is never primed again,
+so `--prime` on a later run changes nothing. This is the default because a listener's journal is
+what happens *while it listens* (ADR-005), and because discovery drifts: WhatsApp's chat listing is
+capped (`--whatsapp-chat-limit`), the top-N moves between polls, and under the old empty-cursor =
+beginning contract every late-surfacing chat replayed its whole history — measured as 447
+months-old messages from 17 chats in one pass, each a potential agent wake. `--replay-history` is
+the explicit opt-in to the archive behaviour; a channel that cannot prime falls through to it.
+
+**Conversations are fetched in parallel** by a bounded worker pool (`--fetch-parallel`, default 6,
+or `$CONVO_FETCH_PARALLEL`). Every conversation keeps its own cursor, one failing room still does
+not blind the others, the journal is appended before the cursor file is written, and the order
+*within* a conversation is the adapter's. The order *across* conversations is completion order and
+may interleave — dedupe by id, never by clock (INTERFACES.md §2.2). A room that answers with a
+throttle (429/5xx) has its worker backed off — `Retry-After` verbatim when the server sends one —
+and re-asked a bounded number of times before it is reported failed for that pass. Measured on a
+live tenant through apl (~1.6s per Graph call, one process spawn each): a pass over 37 conversations
+went from 60–160s sequentially to well under the active poll interval with six workers.
+
+`journal --json` and `next --json` emit **line JSON**: exactly one message object per line, nothing
+else on stdout, the same shape as the journal file — parse it with `while read line`, never as an
+array.
 
 Delivery filters (`next`, `journal`): `--mentions-me` · `--from <name|id>` ·
 `--exclude-from <name|id>` · `--match <regex>` · `--in <needle>` ·

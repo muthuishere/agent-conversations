@@ -3,6 +3,7 @@ package convo
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // Exit codes. The first five are INTERFACES.md §1 verbatim — a Go CLI that
@@ -120,4 +121,30 @@ func Code(err error) string {
 		return e.Code
 	}
 	return "error"
+}
+
+// Retryable is implemented by an error a channel considers transient — a 429,
+// a 5xx, a gateway that blinked. It is an interface rather than a sentinel so
+// an adapter can keep its own error type and still tell the ingest loop "back
+// off, do not hammer". RetryAfter is the server's own suggestion, or zero.
+type Retryable interface {
+	error
+	Retryable() bool
+	RetryAfter() time.Duration
+}
+
+// IsRetryable reports whether err, anywhere in its chain, is a Retryable that
+// says so.
+func IsRetryable(err error) bool {
+	var r Retryable
+	return errors.As(err, &r) && r.Retryable()
+}
+
+// RetryAfter returns the delay the error's origin suggested, or zero.
+func RetryAfter(err error) time.Duration {
+	var r Retryable
+	if errors.As(err, &r) {
+		return r.RetryAfter()
+	}
+	return 0
 }

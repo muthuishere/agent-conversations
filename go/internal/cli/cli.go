@@ -87,14 +87,16 @@ type options struct {
 	kind        string
 
 	// ingest (fetch / listen)
-	in         string
-	prime      bool
-	once       bool
-	pollActive time.Duration
-	pollMid    time.Duration
-	pollIdle   time.Duration
-	idle1      time.Duration
-	idle2      time.Duration
+	in            string
+	prime         bool // accepted, no-op: start-at-now is the default (see --replay-history)
+	replayHistory bool
+	once          bool
+	fetchParallel int
+	pollActive    time.Duration
+	pollMid       time.Duration
+	pollIdle      time.Duration
+	idle1         time.Duration
+	idle2         time.Duration
 }
 
 const usage = `convo — a generic agent-conversation CLI.
@@ -158,8 +160,13 @@ Delivery filters (next, journal) — composable, applied AT DELIVERY ONLY:
 
 Ingest flags (fetch, listen):
   --in <needle>       only conversations whose id or name matches
-  --prime             on a conversation with no cursor yet, jump to NOW instead
-                      of replaying its whole history into the journal
+  --replay-history    on a conversation with no cursor yet, replay its WHOLE
+                      history into the journal. The default is to start it at
+                      NOW and ingest nothing from its past: a listener journals
+                      what happens while it listens, not the archive.
+  --prime             accepted for compatibility; a no-op, because it is now
+                      the default
+  --fetch-parallel <n> conversations fetched at once (default 6; 1 = sequential)
   --once              listen: run exactly one pass and exit
   --poll-active/-mid/-idle, --idle-1, --idle-2   adaptive backoff tiers
 
@@ -244,6 +251,8 @@ func (a *App) run(ctx context.Context, argv []string) error {
 	// narrowing ingest loses history and narrowing delivery does not.
 	fs.StringVar(&o.in, "in", "", "")
 	fs.BoolVar(&o.prime, "prime", false, "")
+	fs.BoolVar(&o.replayHistory, "replay-history", false, "")
+	fs.IntVar(&o.fetchParallel, "fetch-parallel", envInt(a.env("CONVO_FETCH_PARALLEL", "0")), "")
 	fs.BoolVar(&o.once, "once", false, "")
 	fs.DurationVar(&o.pollActive, "poll-active", defaultActive, "")
 	fs.DurationVar(&o.pollMid, "poll-mid", defaultMid, "")
@@ -294,7 +303,7 @@ func (a *App) run(ctx context.Context, argv []string) error {
 // default, which is the right way round for a tool whose payload is free text.
 var boolFlags = map[string]bool{
 	"json": true, "wait": true, "ack": true, "all": true, "new": true,
-	"prime": true, "once": true, "help": true, "h": true, "version": true,
+	"prime": true, "replay-history": true, "once": true, "help": true, "h": true, "version": true,
 	"mentions-me": true,
 }
 

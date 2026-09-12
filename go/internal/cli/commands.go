@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -285,14 +286,24 @@ func (a *App) cmdAck(ctx context.Context, o options, args []string) error {
 
 // emitMessages prints in one of two modes, on purpose.
 //
-// --json is for programs. The default is the `compact` form of
+// --json is for programs, and it is LINE JSON: exactly one object per line,
+// nothing else on stdout, the same shape as the journal file itself. A pretty-
+// printed array looks friendlier and breaks every `while read line` a script
+// wraps around it — measured: the first live-test agent gave up on --json and
+// read the .ndjson directly. The default is the `compact` form of
 // INTERFACES.md §3: tab-separated, one line per message, the MESSAGE ID NEVER
 // TRUNCATED because it is the join key a reply is addressed with. Only the
 // trailing text is capped. A model reads this with its eyes and never has to
 // parse JSON, which is where hand-parsing bugs come from.
 func (a *App) emitMessages(o options, msgs []convo.Message) error {
 	if o.asJSON {
-		return a.print(o, "", msgs)
+		enc := json.NewEncoder(a.Stdout)
+		for _, m := range msgs {
+			if err := enc.Encode(m); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 	for _, m := range msgs {
 		where := "[dm]"

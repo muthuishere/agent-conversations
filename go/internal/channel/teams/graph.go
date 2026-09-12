@@ -273,7 +273,11 @@ func (c *Channel) do(ctx context.Context, method, rawURL string, body any, out a
 		return nil
 	}
 	if r, ok := lastErr.(*retryable); ok {
-		return r.err
+		// Returned AS the retryable, not unwrapped: errors.Is/As still reach
+		// the convo.Err inside, and the ingest loop can see through
+		// convo.IsRetryable that this room was throttled, not broken, and back
+		// its worker off instead of moving straight on to hammer the next one.
+		return r
 	}
 	return lastErr
 }
@@ -285,8 +289,10 @@ type retryable struct {
 	err   error
 }
 
-func (r *retryable) Error() string { return r.err.Error() }
-func (r *retryable) Unwrap() error { return r.err }
+func (r *retryable) Error() string             { return r.err.Error() }
+func (r *retryable) Unwrap() error             { return r.err }
+func (r *retryable) Retryable() bool           { return true }
+func (r *retryable) RetryAfter() time.Duration { return r.after }
 
 func (c *Channel) backoffFor(last error, attempt int) time.Duration {
 	if r, ok := last.(*retryable); ok && r.after > 0 {
