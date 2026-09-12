@@ -110,6 +110,21 @@ type collection[T any] struct {
 	DeltaLink string `json:"@odata.deltaLink"`
 }
 
+// httpStatusError carries the status of a non-retryable 4xx so a caller can
+// distinguish "the server rejected THIS request" from everything else. It
+// exists for one reason: real Graph sometimes hands back an @odata.nextLink
+// that it then refuses (HTTP 400, "Parameter 'DeltaToken' not supported for
+// this request") — observed live, not reproducible on the simulator. A caller
+// following a server-supplied continuation needs to tell that apart from a
+// genuinely bad first request.
+type httpStatusError struct {
+	status int
+	err    error
+}
+
+func (e *httpStatusError) Error() string { return e.err.Error() }
+func (e *httpStatusError) Unwrap() error { return e.err }
+
 // graphError is Graph's error envelope. We keep the `code` because it is the
 // stable machine-readable half; the message is for a human.
 type graphError struct {
@@ -133,6 +148,15 @@ func getCollection[T any](ctx context.Context, c *Channel, path string) ([]T, st
 	for hop := 0; next != "" && hop < maxPageHops; hop++ {
 		var page collection[T]
 		if err := c.do(ctx, http.MethodGet, next, nil, &page); err != nil {
+			// A 400 on a CONTINUATION hop means Graph gave us a link it will
+			// not honour. Keep what we already collected and treat the page
+			// as terminal; failing the whole conversation for the server's
+			// own bad link took 30 of 38 real conversations down in one run.
+			// A 400 on the FIRST hop is still a real error and still fails.
+			var hse *httpStatusError
+			if hop > 0 && errors.As(err, &hse) && hse.status == http.StatusBadRequest {
+				break
+			}
 			return nil, "", err
 		}
 		out = append(out, page.Value...)
@@ -236,8 +260,8 @@ func (c *Channel) do(ctx context.Context, method, rawURL string, body any, out a
 			return convo.Wrap(convo.ErrNotConfigured, "%s: %s",
 				redact(rawURL), graphMessageOf(respBody, "not found"))
 		case resp.StatusCode >= 400:
-			return convo.Wrap(convo.ErrInternal, "%s %s: HTTP %d: %s",
-				method, redact(rawURL), resp.StatusCode, graphMessageOf(respBody, "request failed"))
+			return &httpStatusError{status: resp.StatusCode, err: convo.Wrap(convo.ErrInternal, "%s %s: HTTP %d: %s",
+				method, redact(rawURL), resp.StatusCode, graphMessageOf(respBody, "request failed"))}
 		}
 
 		if out == nil {
