@@ -38,7 +38,14 @@ local simulator, is documented as such, and is not to be used against a real ten
 (no HTTP, no CLI) cannot be built here.
 **Not deciding:** anything about apl's own internals or how handles are provisioned.
 
+### Tightened (owner decision, after a real attempt)
+An adapter for a local messaging hub was started on the argument that it satisfied this
+decision's *axis* — the process still held no secret, the hub did. The owner rejected it:
+**apl only, no second broker.** A channel apl cannot front is out of scope until apl can front
+it; it is not a reason to add another path. This closes the "add a second broker seam"
+escape hatch below. Telegram, which has no apl provider today, waits for one.
+
 ## What would change our mind
-- A channel arrives that apl cannot front and that we genuinely need → add a second broker
-  seam, not a raw-token path.
+- A channel arrives that apl cannot front and that we genuinely need → **extend apl** with a
+  provider for it. Not a second broker, not a raw-token path (tightened above).
 - apl gains a streaming/webhook verb → revisit push transports.
