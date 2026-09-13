@@ -518,7 +518,7 @@ footer p{max-width:var(--measure)}
 <pre><code>respond &lt;messageId&gt; "text"    # dm → that conversation
                               # channel → threaded reply</code></pre>
     </div>
-    <p class="caption">The agent supplies a message id. The tool decides the target. See <a href="../INTERFACES.md">INTERFACES.md</a> for the full contract.</p>
+    <p class="caption">The agent supplies a message id. The tool decides the target. See <a href="https://github.com/muthuishere/agent-conversations/blob/main/INTERFACES.md">INTERFACES.md</a> for the full contract.</p>
   </div>
 </section>
 
@@ -733,12 +733,14 @@ footer p{max-width:var(--measure)}
   <div class="wrap">
     <div class="sec-head"><h2>Read the rest</h2></div>
     <div class="linkgrid">
-      <a href="../ARCHITECTURE.md"><span class="lt">ARCHITECTURE.md</span><span class="ld">The full reference architecture, including scaling and porting to another channel.</span></a>
-      <a href="../INTERFACES.md"><span class="lt">INTERFACES.md</span><span class="ld">The contracts: adapter interface, envelope schema, daemon/consumer protocol.</span></a>
-      <a href="../reference/daemon/"><span class="lt">reference/daemon/</span><span class="ld">Journal, cursor semantics, coalescing, backoff, heartbeat, locking.</span></a>
-      <a href="../reference/adapters/"><span class="lt">reference/adapters/</span><span class="ld">Per-channel notes — Teams, Slack, Telegram, WhatsApp, IMAP.</span></a>
-      <a href="../reference/skill/"><span class="lt">reference/skill/</span><span class="ld">The agent side: discipline, filters, reply routing, re-arming.</span></a>
-      <a href="../examples/"><span class="lt">examples/</span><span class="ld">Run <code>node examples/demo.js</code> — the whole loop offline, no install.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/blob/main/ARCHITECTURE.md"><span class="lt">ARCHITECTURE.md</span><span class="ld">The full reference architecture, including scaling and porting to another channel.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/blob/main/INTERFACES.md"><span class="lt">INTERFACES.md</span><span class="ld">The contracts: adapter interface, envelope schema, daemon/consumer protocol.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/tree/main/reference/daemon"><span class="lt">reference/daemon/</span><span class="ld">Journal, cursor semantics, coalescing, backoff, heartbeat, locking.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/tree/main/reference/adapters"><span class="lt">reference/adapters/</span><span class="ld">Per-channel notes — Teams, Slack, Telegram, WhatsApp, IMAP.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/tree/main/reference/skill"><span class="lt">reference/skill/</span><span class="ld">The agent side: discipline, filters, reply routing, re-arming.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/blob/main/CROSS-SESSION.md"><span class="lt">CROSS-SESSION.md</span><span class="ld">Delivering into a session you do not own: states, backpressure, the refusals.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/tree/main/decisions"><span class="lt">decisions/</span><span class="ld">The ADRs — why the host is fixed, why a broker is required, why we test on real channels.</span></a>
+      <a href="https://github.com/muthuishere/agent-conversations/tree/main/examples"><span class="lt">examples/</span><span class="ld">Run <code>node examples/demo.js</code> — the whole loop offline, no install.</span></a>
     </div>
     <p><a href="https://github.com/muthuishere/agent-conversations">github.com/muthuishere/agent-conversations</a></p>
   </div>
