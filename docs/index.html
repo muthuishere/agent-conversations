@@ -671,8 +671,37 @@ footer p{max-width:var(--measure)}
           <tr><td>Reply sent to the wrong target type</td><td>platform returns 200, the message vanishes</td><td>route by <code>source.kind</code>; fail loudly on an unknown id</td></tr>
           <tr><td>Idle backoff during a new conversation</td><td>the first message waits a full idle period</td><td>lower the idle interval while attended</td></tr>
           <tr><td>Ad-hoc parsing of tool output</td><td>false bugs; swallowed errors</td><td>give tools a machine-readable <em>and</em> a human-readable mode</td></tr>
+          <tr><td><code>done</code> read as a dead session</td><td>turn one lands, every later turn is refused as absent</td><td><code>done</code> is a finished <em>turn</em> at a ready prompt — deliver into it</td></tr>
+          <tr><td>Wake keyed on unacked</td><td>one answered message wakes the agent forever</td><td>the handler acks; the waker refuses to re-wake on the same id</td></tr>
+          <tr><td>Operator surface understates the audience</td><td>a group reads as a private chat; nobody notices where a reply lands</td><td>label every conversation by name; reserve “dm” for the unnamed</td></tr>
         </tbody>
       </table>
+    </div>
+  </div>
+</section>
+
+<!-- ───────────────────────── live run -->
+<section id="live">
+  <div class="wrap">
+    <div class="sec-head"><h2>What only a live run could tell us</h2></div>
+    <div class="col">
+      <p>Everything above survived a simulator and a full offline test suite. Then it was pointed at a real tenant, with real colleagues answering in their own time, and it broke in four places within the hour — <em>none</em> of them reachable from the mock, because all four lived in the model of the <strong>host</strong> and the <strong>operator&rsquo;s view</strong>, which a channel simulator does not have.</p>
+      <p>The pattern worth taking away: in every case a unit test <em>passed</em>, because the test encoded the same wrong belief as the code. One of them was an explicit assertion defending the bug. A test defends a model; only live traffic validates one.</p>
+    </div>
+    <div class="scroll fail wide">
+      <table>
+        <thead><tr><th class="k">What broke</th><th>What we believed</th><th>What the tenant showed</th></tr></thead>
+        <tbody>
+          <tr><td>Multi-turn, entirely</td><td><code>done</code> means the session finished — fall back, do not resurrect</td><td><code>done</code> means the agent finished its <em>turn</em> and is waiting at a prompt. A fresh pane is <code>idle</code> for its first delivery and <code>done</code> for every one after, so turn two was refused as absent, always.</td></tr>
+          <tr><td>A wake storm</td><td>&ldquo;unacked &gt; 0&rdquo; is a fine wake condition</td><td>Delivery advances the read cursor but does <em>not</em> ack. One message from one person woke the agent four times in four minutes, each wake spending a full turn re-answering it.</td></tr>
+          <tr><td>The read path</td><td>reading your own mail needs a live host</td><td>Taking a message from the journal never addresses an agent. Requiring a host made the pure-consumer path impossible, and a real reply sat undeliverable because no pane happened to be running.</td></tr>
+          <tr><td>The operator&rsquo;s view</td><td>a coarse conversation label is cosmetic</td><td>Every non-channel source printed as &ldquo;dm&rdquo;. A message from an eight-person meeting read as a private chat, the operator believed it, and the reply went to the meeting. The label is the surface a human uses to know who is watching.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="col">
+      <p>Two guards held under the same traffic, and both had cost real incidents before they existed: the single-consumer lock refused a second daemon on the same tag, and every refused delivery <em>held</em> its message instead of dropping it. Across all four failures, nothing was lost.</p>
+      <p>The unbuilt piece the run exposed is not a bug but a boundary. Delivery filters answer <em>whose</em> messages get through. Nothing answers <em>what a sender may cause</em> — an inbound line can direct an agent with repository access — or <em>where a reply is allowed to land</em>, since routing derives the destination from the incoming message, which means the audience is chosen by whoever writes to you.</p>
     </div>
   </div>
 </section>
